@@ -1,0 +1,865 @@
+---
+title: "Crime Rate Prediction using PCA and Regression"
+author: "Alena Fedash"
+always_allow_html: true
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+date: "2022-09-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+**Please find below my step-by-step solution in R with explanations, comments and conclusions for each step.**
+
+## **Step 0: Load the libraries**
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(qcc)
+library(mctest)
+library(ppcor)
+library(car)
+library(psych)
+library(ggthemes)
+library(corrplot)
+library(DAAG)
+library(GGally)
+library(caret)
+library(psych)
+library(ggpubr)
+```
+
+## **Step 1: Load the dataset**
+
+```{r}
+data <- read.table("uscrime.txt", 
+                   header = TRUE, 
+                   stringsAsFactors = FALSE,
+                   sep = "", 
+                   dec = ".")
+head(data)
+```
+
+```{r}
+test_data <- data.frame(M = 14.0,
+                        So = 0, 
+                        Ed = 10.0, 
+                        Po1 = 12.0, 
+                        Po2 = 15.5,
+                        LF = 0.640, 
+                        M.F = 94.0, 
+                        Pop = 150, 
+                        NW = 1.1, 
+                        U1 = 0.120, 
+                        U2 = 3.6, 
+                        Wealth = 3200, 
+                        Ineq = 20.1, 
+                        Prob = 0.040,
+                        Time = 39.0)
+test_data
+```
+
+## **Step 2: Basic Explorations**
+
+From previous analysis, we already know that there are no NA values in the data frame. Let's check a short summary for each variable:
+
+```{r}
+describe.by(data)
+```
+
+Here we can see that the predictors have very different scales, even those that describe similar things (like U1 and U2 that describe unemployment have different scales (U1 displays 10% as 0.1, and U2 as 10.0)). From previous work on this data I also know that most predictors are moderately skewed (**between -1 and -0.5 or 0.5 and 1**) and have have platykurtic distribution(<3). I will visualize the predictors to get a general sense of the parameters:
+
+```{r}
+#melt data for easier visualization
+melted<-melt(data)
+#boxplots
+box_plots <- ggplot(melted,
+                    aes(x=factor(variable), y=value))+
+              geom_boxplot(alpha=.5, fill="skyblue")+
+              facet_wrap(~variable, ncol=8, scale="free")+
+              theme_fivethirtyeight()
+
+    
+box_plots
+#distribution plots with density
+hist_plots <- ggplot(melted,
+                    aes(x=value))+
+              geom_histogram(aes(y=..density..), colour="black", fill="white")+
+              geom_density(alpha=.3, color="skyblue", fill="skyblue")+
+              facet_wrap(~variable, scale="free")+
+              theme_fivethirtyeight()
+hist_plots
+```
+
+Boxplots clearly show skewness to the right for many parameters and that some of them might have extreme values / outliers. 
+Histograms with a density curve for each variable support our assumption that most variables are right-skewed, and also most of the predictors are not normally distributed - the only normally distributed variable seems to be Time.
+
+## **Step 3: Pairwise Correlation**
+
+Before PCA, it is important to understand whether we really need it - we need to check if there is strong pairwise correlation for some variables.
+Here are the assumptions I made (based on the description of what each variable shows):
+
+- Po1 and Po2, as those are expenditures on police protection in two consequent years (1959, 1960)
+
+- U1 and U2, since they show urban male unemployment rate for two age groups (14-24, 35-39)
+
+- Wealth and Ineq, since wealth parameter of a family and it's inequality level seem to be describing the same parameter (inequality is probably (to a large extent) based on wealth)
+
+- NW and Ineq, more inequality in states with higher percentage of non-white population
+
+- NW and Ed, states with higher non-white population number might have less mean years of schooling
+
+- Ed-Wealth(Ineq) - states with wealthier population might have more mean years of schooling among adults
+- So-NW - southern states migh have had more non-white population in 1960s
+
+- Po1 / Po2 and wealth / ineq - people who have a job should be wealthier (hence higher equality for such individuals)
+
+To see if the assumptions are true, let's build correlation plots and matrix.
+
+```{r}
+corrplot(cor(data[,-16]), method='pie', type="upper", order="hclust")
+```
+
+The following variables have relatively high correlation, according to the plot:
+
+- Po1-Po2 (correlation is almost 1)
+
+- Wealth-Ineq
+
+- U1-U2
+
+- So-Ed, So-NW 
+
+- Po1(Po2)-Wealth, Po1(Po2)-Ineq
+
+- NW-Ineq, NW-Wealth
+
+- Ed-NW, Ed-Wealth, Ed-Ineq
+
+
+To understand which correlations are significant, and which are not, create a matrix of p-values for the correlation of each pair of variables:
+
+
+```{r}
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(data[,-16])
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(mtcars)
+head(p.mat[, 1:5])
+```
+
+Finally, combine the correlation plot with p-values for pairwise correlation and use the confidence interval of 90% to leave on the plot only correlation values that are significant:
+
+```{r}
+corrplot(cor(data[,-16]), 
+         method='pie', 
+         type="upper", 
+         #order="hclust",
+         p.mat = p.mat, 
+         sig.level = 0.1,
+         insig = "blank")
+```
+
+This has narrowed down the amount of high correlation pairs, however we still have pairs with high correlations, such as P1-P2, So-Ed, Ed-NW, Wealth-Ineq, Ed-Ineq, U1-U2, and so on.
+
+The exact coefficients for such variables can be found in the correlation matrix:
+
+
+```{r}
+cm <- as.table(round(cor(data[,-16]),1))
+cm
+```
+
+Visualize correlation between pairs:
+
+```{r}
+
+ggpairs(data[,-16], upper = list(continuous = wrap("cor", size = 2)))
+#changed font size so that values would fit
+```
+
+High correlation is especially visible for such pairs as Po1-Po2, Wealth-Ineq, U1-U2, NW-Ineq, etc.
+
+To summarize, we have variables with high correlation in the data set, which may result in multicollinearity in our LR model, if we use all variables. Moreover, our data set does not correspond to the 10 to 1 ratio of data points and varaibles - we have too many variables and too little data points, which makes it hard to build a model using all the variables with no overfit. Hence, we do need to take remedial measures here - and PCA can be helpful in this case, as it can help remove correlation within the data and helps us deal with the high amount of factors to decide which are more important.
+
+## **Step 4: Principal Component Analysis**
+
+Let's run PCA on the predictors. We will exclude Crime, as it is a response variable that we are trying to predict, and will scale the predictors, since they have very different scales, as shown on the boxplot above. As for Crime, we will not scale it, since it is the response varaible, and scaling it won't bring any benefit to the analysis (we only need predictors to build the model).
+
+PCA on the scale predictors:
+
+```{r}
+pca <- prcomp(data[,-16], 
+              scale. = TRUE 
+              )
+pca
+```
+
+Get the summary of PCA:
+
+```{r}
+summary(pca)
+```
+
+As expected, the first component explains the highest proportion of variance among all 15 PCs - 40.13% and has a standard deviation of 2.45 (also the highest among other PCs).
+
+The principal components that we are interested in for the model are stored in x object of pca. It is of the same dimension as the initial data set:
+
+```{r}
+head(pca$x)
+```
+
+Eigenvectors of the covariance matrix is the rotation component:
+
+```{r}
+head(pca$rotation)
+```
+
+## **Step 5: Visualizing PCA output**
+
+To understand how the number of PCA affects the shares of variance and cumulative variance explained, and to decide how many PCs we need to use for the model, let's create three principal plots.
+
+First of all, the Screee plot. It shows the eigenvalues on the vertical axis and the number of factors on the horizontal one:
+proportion of variance within the data that is explained by each of the principal components:
+
+```{r}
+screeplot(pca, npcs=15)
+#display all PCs
+```
+
+Ideally, at least 90% of the varaince should be explained - so we choose the number of PCs that have eigenvalues higher than 1.
+Based on the Screeplot, **the first 4 principal components are suggested for use, as they all have a value above 1**, meaning that 4 principal components would explain at least 90% of the variance in the data. Considering that we have only 47 data points, it is a good proportion for the model. However, **I find it important to consider adding the 5th PC, as it is not very different in eigenvalue from PC4, so its explanation power may be useful for the model.
+
+Second of all, compute variance explained by each PC using the standard deviation of PC from the PCA output.And create a plot of the share of variance explained by each PC. This is to **compare the explanation power of PC4 and PC5 and see whether the model can benefit from adding PC5**:
+
+```{r}
+explained_var <- pca$sdev^2/sum(pca$sdev^2)
+explained_var_round<-round(explained_var,4)
+#plot explained variance by each PC:
+
+qplot(c(1:15), explained_var_round,) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Proportion of Variance Explained") +
+  ggtitle("Proportion of Variance explained by each Principal Component") +
+  ylim(0, 1) +
+  geom_text(aes(label=explained_var_round*100),vjust=-2)+
+  theme_stata()
+```
+
+As we can see from the plot, the first principal component explains 40% of the variance in the data, while the 15th PC - only 0.03%. 
+However, **PC5 is not very different from PC4 in terms of the share of variance explained**. PC4 explains 7.75% of the variance, and PC5 explains another 6.39%. **After PC5 the variance explained by PCs starts to drop significantly and becomes closer to 1%**. I would suggest **including PC5 in the analysis as well**, since the sum of variance explained by PC1 through PC4 is ~79.93%, and with PC5 it increases to ~86.32%, which is more preferable for the model.
+
+Finally, let's plot the cumulative sum of proportion of variance explained by PCs to support what we just discussed:
+
+```{r}
+cumsum_var <- cumsum(explained_var)
+cumsum_var_round <- round(cumsum_var,4)
+#plot cumulative explained variance by each PC:
+
+qplot(c(1:15), cumsum_var_round,) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Cumulative Proportion of Variance Explained") +
+  ggtitle("Cumulative Proportion of Variance explained by each Principal Component") +
+  ylim(0, 1) +
+  geom_text(aes(label=cumsum_var_round*100),vjust=2)+
+  theme_stata()
+
+```
+
+As seen before, we should definitely consider using the **first five principal components** for the model, which altogether explain 86% of the variance in the data. 6 PCs explain 90%, but the values for the PC6 on the two previous plots are rather low, suggesting that the model would not benefit too much from its addition.
+
+Nevertheless, I would suggest trying the three combinations - the first 4, 5 and 6 principal components, and comparing the quality of prediction after cross-validation on each of them.
+
+
+## **Step 6: Linear Regression on first 4 PCs**
+
+### **Step 6.1: Linear Regression (Cross-Validation)**
+
+In order to make sure that the first 5 PCs are the correct component set for the model, I will also run regression on the first 4 and 6 PCs. Let's start with PCs 1-4.
+
+Firstly, we create a new data frame with the **x values of the first 4 principal components** and the response varaible, Crime:
+
+```{r}
+#attach Crime values to the first 4 PCs
+pc4 <- cbind(pca$x[,1:4], Crime=data[,16])
+#check the result
+head(as.data.frame(pc4))
+```
+
+Now, we create a linear regression model on the new data matrix with 4 PCs and Crime values. Crime is the response variable, while the 4 PCs are predictors. Cross Validation is the general practice for estimating quality of linear regression, as the risks of choosing a over-complicated or over-simplified model are unlikely, compared to AIC and BIC. AIC and BIC are both related to cross-validation, but the benefit of CV is that it does not produce the common issues related to them.
+
+In order to **reduce overfitting** and get more accurate results, I will train a model using **repeated cross-validation** within the caret package.
+I chose repeated cross-validation, as it creates several models using the same number of folds, which gives us a more accurate result. We will have **10 repeats** withing cross-validation and **5 folds**.  I chose 5 folds instead of 10 due to the size of our data set - we only have 47 data points, and having too many folds would lead to too much variability within them, which can be reflected in inaccurate results. 5 folds should be enough to have complete data representations in each fold.
+
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+pc4_model <- train(Crime~.,
+                     data=as.data.frame(pc4),
+                     trControl=data_ctrl,
+                     method="lm")
+pc4_model
+install.packages('rpart.plot')
+
+```
+
+As a result, **linear regression using 4 Principal Components gives us after repeated cross-validation an R-squared of 28%**. This is not ideal, and perhaps we will have a better accuracy with five principal components.
+We can now use this model to make a prediction, extract model's parameters and unscale them.
+
+### **Step 6.2: Prediction for new data (PC 1-4 model)**
+
+Now we can make a prediction for the new data point. To do that, I first need to **scale the test data** using the same scaling parameters which were applied to the rest of the data. We can do this by using our PCA in the predict function:
+
+```{r}
+set.seed(1)
+test_data_scaled <- data.frame(predict(pca,test_data))
+test_data_scaled
+```
+
+Now, using the scaled test data, we can make a prediction for Crime using our model:
+
+```{r}
+set.seed(1)
+pc4_prediction <- predict(pc4_model,test_data_scaled)
+ceiling(pc4_prediction)
+```
+
+The prediction of 1113 Crimes for new stat is not as bad as a linear regression with all parameters, which gave us 155 Crimes in the last project with this data. However, considering that the final function with 5 significant parameters gave us a ~1300 Crimes prediction last time, I would expect good predictions to be near that value.
+
+### **Step 6.3: Transforming to original data (Unscaling)**
+
+Now, we need to transform the coefficients from PCA into original data coefficients. 
+First, we extract the beta values of the model - the intercept and the coefficients:
+
+```{r}
+#check all coefficients:
+summary(pc4_model)$coefficients
+#extract the intercept:
+intercept_scaled4 <- summary(pc4_model)$coefficients[1]
+intercept_scaled4
+#extract the coefficients
+coefs_scaled4 <- summary(pc4_model)$coefficients[2:5]
+coefs_scaled4
+```
+
+Then, using the rotation values from PCA for the first 4 components, we can transform the principal component regression coefficients into **coefficients for our initial variables:**
+
+
+```{r}
+#rotation component of PCA:
+pca$rotation[,1:4]
+#alphas:
+a4 <- pca$rotation[,1:4] %*% coefs_scaled4
+#transpose:
+t(a4)
+```
+
+Finally, we need to **unscale the result**, as the current coefficients are based on the scaled data. To unscale, we divide the scaled alpha values by the scale component of the PCA:
+
+
+```{r}
+a_unscaled4 <- a4/pca$scale
+a_unscaled4
+```
+
+Unscaled intercept (beta 0) (calculate using the center and scale components from PCA):
+
+```{r}
+intercept_unscaled4 <- intercept_scaled4 - sum(a4*pca$center/pca$scale)
+intercept_unscaled4
+```
+
+Using the original alpha and beta0 values, we can calculate the estimates that our model gives for the Crime variable:
+
+```{r}
+estimated_vals4 <- as.matrix(data[,1:15]) %*% a_unscaled4 + intercept_unscaled4
+estimated_vals4
+```
+
+
+### **Step 6.4: Specifying the model in terms of original data**
+
+Now that we know the coefficients in terms of original variable scales, we can specify the model built on the **first four Principal Components**:
+
+**Crime ~ 1666.49 - 16.93M + 21.34So + 12.83Ed + 21.35Po1 + 23.09Po2 - 346.57LF - 8.29M.F. + 1.05Pop + 1.50NW - 1509.93U1 + 1.69U2 + 0.04Wealth - 6.90Ineq + 144.95Prob - 0.93Time**
+
+Let's check R-squared values and predictions for cross-validated models build using 5 and 6 principal components, and then decide which model is better.
+
+## **Step 7: Linear Regression on first 5 PCs**
+
+Here, I will use the same approach in calculations as in the previous step, and will comment mostly on results.
+
+### **Step 7.1: Linear Regression (Cross-Validation)**
+
+Create a new data frame with the **x values of the first 5 principal components** and the response varaible, Crime:
+
+```{r}
+#attach Crime values to the first 5 PCs
+pc5 <- cbind(pca$x[,1:5], Crime=data[,16])
+#check the result
+head(as.data.frame(pc5))
+```
+
+Linear regression model with repeated cross-validation (5 folds, 10 repetitions)
+
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+pc5_model <- train(Crime~.,
+                     data=as.data.frame(pc5),
+                     trControl=data_ctrl,
+                     method="lm")
+pc5_model
+
+```
+
+**Adding the fifth principal component has helped us improve R-squared by almost 200%! Instead of 28%, it is now at 55.4%**. RMSE (Root Mean Square Error) and MAE (Mean Absolute Error) are also significantly lower. Let's check the prediction and specify the model's equation.
+
+### **Step 7.2: Prediction for new data (PC 1-5 model)**
+
+We already have the test data scaled using PCA parameters, so we can make a prediction using the model built on first 5 principal components:
+
+```{r}
+set.seed(1)
+pc5_prediction <- predict(pc5_model,test_data_scaled)
+#round
+ceiling(pc5_prediction)
+```
+
+The prediction appears to be a lot more accurate as well - 1389 Crimes. With our final model in the regression project on this data, we had a prediction of 1304 Crimes. Considering that here we reduce overfitting and multicollinearity by using PCA, predictions are supposed to be less random, so perhaps 1389 is a more correct forecast compared to 1304.
+
+### **Step 7.3: Transforming to original data (Unscaling)**
+
+
+Transform the coefficients from PCA into original data coefficients. 
+Extract the beta values of the model:
+
+```{r}
+#check all coefficients:
+summary(pc5_model)$coefficients
+#extract the intercept:
+intercept_scaled5 <- summary(pc5_model)$coefficients[1]
+intercept_scaled5
+#extract the coefficients
+coefs_scaled5 <- summary(pc5_model)$coefficients[2:6]
+coefs_scaled5
+```
+
+Using the rotation values from PCA for the first 5 components, transform the principal component regression coefficients into **coefficients for the initial variables:**
+
+
+```{r}
+#rotation component of PCA:
+pca$rotation[,1:5]
+#alphas:
+a5 <- pca$rotation[,1:5] %*% coefs_scaled5
+#transpose:
+t(a5)
+```
+
+**Unscale the result**:
+
+```{r}
+#getting rid of 'e'values in output
+options("scipen"=100, "digits"=4)
+#unscaling
+a_unscaled5 <- a5/pca$scale
+a_unscaled5
+```
+
+Unscaled intercept (beta 0):
+
+```{r}
+intercept_unscaled5 <- intercept_scaled5 - sum(a5*pca$center/pca$scale)
+intercept_unscaled5
+```
+
+Calculate the estimates of model Crime variable:
+
+```{r}
+estimated_vals5 <- as.matrix(data[,1:15]) %*% a_unscaled5 + intercept_unscaled5
+estimated_vals5
+```
+
+
+### **Step 7.4: Specifying the model in terms of original data**
+
+Specify the model equation built on the **first five Principal Components**:
+
+**Crime ~ -5933.837 + 48.37 M + 79.02So + 17.83Ed + 39.48Po1 + 39.86Po2 + 1886.95LF + 36.69M.F. + 1.55Pop + 9.54NW + 159.01U1 + 38.30U2 + 0.04Wealth + 5.54Ineq - 1523.52Prob + 3.84Time**
+
+Using **the first five pricnipal components, we have built a more accuarate model with a higher R-squared and lower error metrics**. Finally, let's compare it to a model with six principal components.
+
+
+## **Step 8: Linear Regression on first 6 PCs**
+
+Let's compare the previous two models with the one built using the first six principal components
+
+### **Step 8.1: Linear Regression (Cross-Validation)**
+
+Create a new data frame with the **x values of the first 6 principal components** and the response varaible, Crime:
+
+```{r}
+#attach Crime values to the first 5 PCs
+pc6 <- cbind(pca$x[,1:6], Crime=data[,16])
+#check the result
+head(as.data.frame(pc6))
+```
+
+Linear regression model with repeated cross-validation (5 folds, 10 repetitions)
+
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+pc6_model <- train(Crime~.,
+                     data=as.data.frame(pc6),
+                     trControl=data_ctrl,
+                     method="lm")
+pc6_model
+
+```
+
+For a model with six principal components, we have a slightly lower R-squared of 54.98% and a slightly larger RMSE. **Adding PC6 did not give a significant improvement/change to the model**.
+
+### **Step 8.2: Prediction for new data (PC 1-6 model)**
+
+We already have the test data scaled using PCA parameters, so we can make a prediction using the model built on first 6 principal components:
+
+```{r}
+set.seed(1)
+pc6_prediction <- predict(pc6_model,test_data_scaled)
+#round
+ceiling(pc6_prediction)
+```
+
+This time, the prediction is a bit lowerm 1249, compared to 1388 with 5 principal components. 
+
+### **Step 8.3: Transforming to original data (Unscaling)**
+
+
+Transform the coefficients from PCA into original data coefficients. 
+Extract the beta values of the model:
+
+```{r}
+#check all coefficients:
+summary(pc6_model)$coefficients
+#extract the intercept:
+intercept_scaled6 <- summary(pc6_model)$coefficients[1]
+intercept_scaled6
+#extract the coefficients
+coefs_scaled6 <- summary(pc6_model)$coefficients[2:7]
+coefs_scaled6
+```
+
+Using the rotation values from PCA for the first 5 components, transform the principal component regression coefficients into **coefficients for the initial variables:**
+
+
+```{r}
+#rotation component of PCA:
+pca$rotation[,1:6]
+#alphas:
+a6 <- pca$rotation[,1:6] %*% coefs_scaled6
+#transpose:
+t(a6)
+```
+
+**Unscale the result**:
+
+```{r}
+#getting rid of 'e'values in output
+options("scipen"=100, "digits"=4)
+#unscaling
+a_unscaled6 <- a6/pca$scale
+a_unscaled6
+```
+
+Unscaled intercept (beta 0):
+
+```{r}
+intercept_unscaled6 <- intercept_scaled6 - sum(a6*pca$center/pca$scale)
+intercept_unscaled6
+```
+
+Calculate the estimates of model Crime variable:
+
+```{r}
+estimated_vals6 <- as.matrix(data[,1:15]) %*% a_unscaled6 + intercept_unscaled6
+estimated_vals6
+```
+
+
+### **Step 8.4: Specifying the model in terms of original data**
+
+Specify the model equation built on the **first six Principal Components**:
+
+**Crime ~ -5924 + 68.89 M + 91.65So + 18.29Ed + 41.43Po1 + 42.43Po2 + 1135.64LF + 38.22M.F. + 0.68Pop + 9.24NW + 100.95U1 + 34.87U2 + 0.04Wealth + 1.43Ineq - 2274.4Prob + 5.1Time**
+
+Comparing this model to the one with 5 principal components, I do not see a significant improvement, so I would suggest to choose the model build using **the first 5 Principal Components** - it has the highest R-Squared and the lowest error values, provides a reasonable prediction, and the number of 5 PCs is supported by the screeplot and explained variance graphs.
+
+## **[Extra] Step 9: Models for other PCs**
+
+Since PC5 and PC6 provide very similar results, I would like to check the output for cross-validated models for each of the PCs combinations.
+
+Let's build and cross-validate 15 models for each number of components and predict Crime variable for each of the models:
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+
+r2 <- numeric(15)
+rmse <- numeric(15)
+mae <- numeric(15)
+prediction <- numeric(15)
+  
+for (i in 1:15) {
+  pcomps <- pca$x[,1:i]  #extract the first i PCs
+  pc_i <- cbind(Crime=data[,16],pcomps)  #add crime variable to the set
+  model <- train(Crime~.,
+                     data=as.data.frame(pc_i),
+                     trControl=data_ctrl,
+                     method="lm")
+  r2[i] <- unlist(model$results[3]) #extract R squared
+  rmse[i] <- unlist(model$results[2]) #extract RMSE
+  mae[i] <- unlist(model$results[4]) #extract RMSE
+  prediction[i] <- ceiling(predict(model,test_data_scaled))
+}
+#compare results
+models <- data.frame(PC=c(1:15),R2=r2, RMSE=rmse, MAE=mae, Prediction=prediction)
+models
+```
+
+Visualize outputs of 15 models:
+
+```{r}
+#r2
+lab<-round(models$R2*100,1)
+qplot(c(1:15), models$R2) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("R-squared") +
+  ggtitle("R-squared for cross-validated models") +
+  ylim(0, 1) +
+  geom_text(aes(label=lab),vjust=-1)+
+  theme_stata()
+#RMSE
+qplot(c(1:15), models$RMSE) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Root Mean Square Error") +
+  ggtitle("Root Mean Square Error for cross-validated models") +
+  theme_stata()
+#MAE
+qplot(c(1:15), models$MAE) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Mean Average Error") +
+  ggtitle("Mean Average Error for cross-validated models") +
+  theme_stata()
+#Prediction
+qplot(c(1:15), models$Prediction) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Crimes per 100.000 residents") +
+  ggtitle("Predicted Crime values") +
+  geom_text(aes(label=models$Prediction),vjust=-1)+
+  theme_stata()
+
+```
+
+As we can see, **Adding the fifth Principal Component is a breakthough for the model** - it significantly reduces errors and doubles R-squared compared to model with PC4.
+
+## **Step 10: Choosing the best model**
+
+Based on the results above, I would choose the model using **the first 5 principal components** as the best one. Analysis has shown that **adding the 5th component is very important** and gives significant improvements in model metrics. Although a model with 7 principal components gives a slightly better result (+1% to R-squared), I would not choose it for several reasons: Screeplot and plots with explained variance suggest that PC5 is the best choice; in terms of the predictor-data points ration, which is ideally 10 to 1, PC5 gives us 5 'predictors' for building a model, which is perfect for our 47 data points; finally, we are still likely to see overfitting with so little data, so racing for an extra 1% in R-squared is probably related to extra risks of increasing overfitting.
+
+Therefore, our final model is:
+
+**Crime ~ -5933.837 + 48.37 M + 79.02So + 17.83Ed + 39.48Po1 + 39.86Po2 + 1886.95LF + 36.69M.F. + 1.55Pop + 9.54NW + 159.01U1 + 38.30U2 + 0.04Wealth + 5.54Ineq - 1523.52Prob + 3.84Time**
+
+Its key metrics are:
+
+```{r}
+models[5,]
+```
+
+## **Step 11: Comparing results**
+
+Here are the main metrics for the two models:
+
+- The first model, using all the predictors, had only 6 significant factors and made very poor predictions. R-squared value, which was initially quite high at 80% (suggesting huge overfitting), lowered to 42% afterr 5-fold cross-validation:
+
+**Model 1: all predictors, 6 are significant, Residual standard error: 209.1 on 31 degrees of freedom, Multiple R-squared:  0.8031, Adjusted R-squared:  0.7078. Prediction: 155. R-squared after CV 41.9**
+
+- Then, after detecting multicollinearity, I tried building other models excluding components that caused multicollinearity, and ended up with a model with 6 predictors, which were all significant:
+
+**Model with final predictors set: M + Ed + Po1 + U2 + Ineq + Prob, Residual standard error: 200.7 on 40 degrees of freedom, Multiple R-squared:  0.7659, Adjusted R-squared:  0.7307. Prediction: 1304. R-squared after CV 63.4**
+
+This model's R-squared also reduced after cross-validation, to 63.4.
+
+Comparing these results to the model that we built, although the prediction is very similar (1304 with the 6-factor model and 1389 with model based on the first 5 PCs), this time our R-squared is slightly lower, 55.8% instead of 63.4%. 
+
+However, using PCA gave us a lot of other benefits: we kept all the predictors and did not have to remove 60% of them for the sake of accuracy; PCA helped reduce noise in the data (which is important when we have so few data points) and gave us an improved performance of the model thanks to the independent and uncorrelated components created by it, without losing in model's accuracy. Therefore, if we need to choose one approach over another, I would go with PCA. 
+
+As a more in-depth analysis, there is one remedial measure that I would like to try in order to improve our PCA model. It is described in the next step.
+
+## **[Extra] Step 12: Attempting to improve the model**
+
+One of the possible negative affects on the model may be the So variable, specifying whether the state is souther or not. The problem is that **this variable is binary**, and **PCA is designed for continuous variables**. The whole point of PCA is minimizing variance, which is impossible to do with binary variables.
+
+I will try to improve our model by removing the So variable from the set - we will have 14 principal components then. 
+
+Just as in step 9, I will build a model for each number of components and compare the results afterwards.
+
+Removing So from data:
+
+```{r}
+data1 <- data[,-2]
+head(data1)
+```
+
+PCA for new data set:
+
+```{r}
+pca_1 <- prcomp(data1[,-15], 
+              scale. = TRUE 
+              )
+pca_1
+```
+
+Screeplot:
+
+```{r}
+screeplot(pca_1)
+```
+
+Screeplot suggests that we would need 5 Principal components for the model.
+
+```{r}
+explained_var1 <- pca_1$sdev^2/sum(pca_1$sdev^2)
+explained_var_round1<-round(explained_var1,4)
+#plot explained variance by each PC:
+
+qplot(c(1:14), explained_var_round1,) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Proportion of Variance Explained") +
+  ggtitle("Proportion of Variance explained by each Principal Component") +
+  ylim(0, 1) +
+  geom_text(aes(label=explained_var_round1*100),vjust=-2)+
+  theme_stata()
+```
+
+No significant change in the Proportion of explained variance plot.
+
+```{r}
+cumsum_var1 <- cumsum(explained_var1)
+cumsum_var_round1 <- round(cumsum_var1,4)
+#plot cumulative explained variance by each PC:
+
+qplot(c(1:14), cumsum_var_round1,) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Cumulative Proportion of Variance Explained") +
+  ggtitle("Cumulative Proportion of Variance explained by each Principal Component") +
+  ylim(0, 1) +
+  geom_text(aes(label=cumsum_var_round1*100),vjust=2)+
+  theme_stata()
+```
+
+As for Cumulative proportion of variance explained, 5 components now explain slightly more variance in data, 86.81% instead of 86.31% (with So).
+
+Keeping that in mind, let's build and cross-validate model for each number of PC. Then make a prediction:
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+
+r2_rem <- numeric(14)
+rmse_rem <- numeric(14)
+mae_rem <- numeric(14)
+prediction_rem <- numeric(14)
+  
+for (i in 1:14) {
+  pcomps <- pca_1$x[,1:i]  #extract the first i PCs
+  pc_i <- cbind(Crime=data1[,15],pcomps)  #add crime variable to the set
+  model <- train(Crime~.,
+                     data=as.data.frame(pc_i),
+                     trControl=data_ctrl,
+                     method="lm")
+  r2_rem[i] <- unlist(model$results[3]) #extract R squared
+  rmse_rem[i] <- unlist(model$results[2]) #extract RMSE
+  mae_rem[i] <- unlist(model$results[4]) #extract RMSE
+  prediction_rem[i] <- ceiling(predict(model,test_data_scaled))
+}
+#compare results
+models_rem <- data.frame(PC=c(1:14),R2=r2_rem, RMSE=rmse_rem, MAE=mae_rem, Prediction=prediction_rem)
+models_rem
+```
+
+
+```{r}
+#r2
+lab<-round(models_rem$R2*100,1)
+qplot(c(1:14), models_rem$R2) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("R-squared") +
+  ggtitle("R-squared for cross-validated models") +
+  ylim(0, 1) +
+  geom_text(aes(label=lab),vjust=-1)+
+  theme_stata()
+#RMSE
+qplot(c(1:14), models_rem$RMSE) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Root Mean Square Error") +
+  ggtitle("Root Mean Square Error for cross-validated models") +
+  theme_stata()
+#MAE
+qplot(c(1:14), models_rem$MAE) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Mean Average Error") +
+  ggtitle("Mean Average Error for cross-validated models") +
+  theme_stata()
+#Prediction
+qplot(c(1:14), models_rem$Prediction) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Crimes per 100.000 residents") +
+  ggtitle("Predicted Crime values") +
+  geom_text(aes(label=models_rem$Prediction),vjust=-1)+
+  theme_stata()
+```
+
+Unfortunately, after removal of So the R-squared value has not improved and even lowered by 2% to 53.6%. However, knowing that PCA works better with no binary variables in the data, we can now see that the model with the first 5 PCs is clearly better that the one with 7PCS - for 5PCs, the R-squared is slightly higher, and the RMSE is a bit lower. The prediction has changed to 1452 (compared to 1389), which appears to be slightly high. Perhaps in the future modules I would be able to try other remedial measures on the So predictor to avoid its removal and make the model more accurate. For now, I would choose the previous model based on 5 principal components with R-square of 55% and the following equation: 
+
+**Crime ~ -5933.837 + 48.37 M + 79.02So + 17.83Ed + 39.48Po1 + 39.86Po2 + 1886.95LF + 36.69M.F. + 1.55Pop + 9.54NW + 159.01U1 + 38.30U2 + 0.04Wealth + 5.54Ineq - 1523.52Prob + 3.84Time**
