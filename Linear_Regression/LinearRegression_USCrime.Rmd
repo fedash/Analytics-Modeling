@@ -1,0 +1,570 @@
+---
+title: "Crime Rate Prediction using Linear Regression"
+author: "Alena Fedash"
+always_allow_html: true
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+date: "2022-09-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## **Summary of Results**
+
+To start with, it is important to notice that we have a **high number of predictors - number of data points** ration: 15 parameters (without the Crime response variable) and only 47 observations. Based on the **one in ten rule**, it is good practice to have a 10:1 data points-predictors ratio. In the data set, we have a ratio of approximately 3:1 (47/15). This suggests that **the risk of overfitting in the regression model would be quite high**. Below is the summary of the steps I took to reduce the chances of overfitting and to build a model with good predictive power, and the results I got.
+
+- To start with, I explored the data set and found that most of the variables are moderately skewed and are not normally distributed. However, since the response variable's distribution is close to normal, it is still possible to do regression analysis, since such a model does not require normally-distributed predictors.
+
+- Then, before building the first regression model, I checked the variables for **pairwise correlation**, since there seemed to be many parameters describing similar attributes, such as police expenditures in two consequent years (Po1-Po2), wealth and inequality, male unemployment and for two age groups (U1-U2), etc. I built a **correlation plot**, which showed high correlation between several pairs of predictors (Po1-Po2, Wealth-Ineq, U1-U2, So-Ed, So-NW, Po(1,2)-Wealth(Ineq), etc.). The parameter Po1 seemed to be 'pulling down' the other variable, as it showed high correlation with several factors at once. This means that **I would probably need to test the model for multicollinearity and and remove several parameters that show high correlation**. Without this measure, the model is very likely to have **poor predictive power**.
+
+- Next, to prove the point from the above, I built a regression model using all the predictors. For this assignment, I decided not to scale the data because we were given a test data point, which is not scaled. Attempting to scale it along with other data could prompt inaccurate prediction, since we have so few data points. As expected, the **model with all 15 predictors** made an **inaccurate prediction of 155** for the Crime rate, which is lower than the minimal value of the variable (300), and does not seem as a true value for a data point with such parameters. Moreover, **only 6 out of 15 predictors were found significant for the regression line**, confirming that some variables need to be removed in order to produce a model with normal predictive power. However, this step was helpful to take a look at the data in terms of the general appropriateness of linear regression for the data. **The 4 plots produced by the regression model** confirmed that there are no problematic cases in the data: residuals do not show non-linear patterns, the predictors-response relationship is linear, residuals have normal distribution and show homoscedasticity, and **outliers have no influence on the regression line**, meaning that removing them would not make any difference for the model. 
+**Model 1: all predictors, 6 are significant, Residual standard error: 209.1 on 31 degrees of freedom, Multiple R-squared:  0.8031, Adjusted R-squared:  0.7078. Prediction: 155**
+
+- Before leaving only significant factors in the model I decided to dive deeper and explore **multicollinearity** of the variables. I used Farrar-Glauber test package to investigate multicollinearity in three steps. First, Overall Multicollinearity Diagnostics Measures on the model with all predictors confirmed with 5 out of 6 metrics (such as Farrar Chi-square, which had a high value of 497) that the set of vectors used for the model are linearly dependent, hence, multicollinearity is present. I applied Individual Multicollinearity Diagnostic Measures of the package to locate multicollinearity and check which variables cause it. The highest Variance Inflation Factor was, as expected, for Po2, followed by Po1 and Wealth (all had VIF over 10, proving multicollinearity). This meant that **Po1 should be the first one up for removal from the model**, as it may also be the cause for high VIF values of a few other variables. Finally, I checked the significance of partial correlation in the model, and the most significant correlation was once again for pairs Po1-Po2, U1-U2 and Wealth-Ineq.
+
+- To deal with multicollinearity, I decided to try exclusion of high VIF and correlation values parameters from the model, step-by-step. Since Po2 appeared to be the most problematic parameter, I excluded it first and re-built the model. There was no significant change in R-squared, and only 6 parameters were significant, as in model 1. However, **removing Po2 significantly reduced VIF values of other variables (e.g. VIF of  Po1 reduced from 104 to 5), showing that this remeial measure helped reduce multicollinearity within the model**. The prediction for the test data, however, was still on the lower side - 724, which seemed inaccurate compared to other similar variables. Also, there were still 6 parameters with VIF over 5 (reason to suspect collinearity), and Wealth with VIF larger than 10. So, Wealth was the next candidate for removal.
+**Model 2: all predictors except Po1, Residual standard error: 208.6 on 32 degrees of freedom, Multiple R-squared:  0.7976, Adjusted R-squared:  0.709. Prediction: 724**
+
+- After excluding Wealth from the model, still only 6 predictors remained significant, suggesting that this version of the model is still not optimal. However, VIF values reduced once again, being >5 only for U1, Ineq and So. No significant change in R-squared was noticed, but the prediction seemed more real (although still under 1000) - 944 Crimes for the test data point.
+**Model 3: all predictors except Po1 and Wealth, Residual standard error: 207.9 on 33 degrees of freedom, Multiple R-squared:  0.7927, Adjusted R-squared:  0.711. Prediction: 944 **
+
+- Exclusion of U1 once again did not produce change in the number of significant predictors - only 6 remained such, just as in the previous models. No significant change in R-squared was seen. **VIF values this time were all under 5, except for Ineq with 5.44**. The prediction seemed to be the most accurate so far - 1225 Crime rate for the test data. **At this point it was obvious that multicollinearity has reduced, however to produce the best possible model for the given data, I needed to exclude the other insignificant predictors.** This would give the model more predictive power by reducing the inclusion of 'randomness' with the parameters that do no impact the regression line.
+**Model 4: all predictors except Po1, Wealth and U1. Residual standard error: 210.7 on 34 degrees of freedom, Multiple R-squared:  0.7806, Adjusted R-squared:  0.7032**
+
+- With the final set of 6 variables (**% of Males [M], mean years of schooling in adults <25 y. [Ed], Police protection expenditures in 1959 [Po1], Unemployment of urban males 35-39y. [U2], income inequality [Ineq], pobability of imprisonment [Prob]**), the metric of the model have significantly improved. Prediction increased to **1304 Crime rate** for the test data, **residual standard error** reduced to 200 (compared to 208 with the first model). **Multiple R-Squared** slightly lowered to 76.6, however **Adjusted R-squared** (metric using only significant predictors) improved to the never seen before 73.1, suggesting that the set of parameters was chosen correctly this time. R-squared might have reduced due to the work with multicollinearity - fewer variables help lower overfitting, so the general 'explanation of the data' (R-squared) reduced due to some unexplained randomness. Moreover, VIF was lower than 4 for each of the parameters, the four plots for residuals indicated no problem with the data points as before, and  the multicollinearity diagnostic measure indicated no collinearity withing data vectors of the model this time.
+**Model with final predictors set: M + Ed + Po1 + U2 + Ineq + Prob, Residual standard error: 200.7 on 40 degrees of freedom, Multiple R-squared:  0.7659, Adjusted R-squared:  0.7307.**
+
+**After determining the set of parameters for the model, it is important to estimate its quality.** To do this, I chose 5-fold cross validation (instead of AIC or BIC): CV is the general practice for linear regression quality estimation, but also because AIC and BIC may sometimes lead us toward choosing an over-complicated or over-simplified model respectively. Moreover, both AIC and BIC are related to cross-validation, but cross-validation does not produce their common problems. For cross-validation, I chose 5 as the number of folds instead of the commonly used 10 because of a small number of data points in the data set: too many folds may each have ‘incomplete’ representation of data and the results might be inaccurate.
+
+- After cross validation, the true **R-Squared value** for the model with the final set of 6 predictors was found to be **63.4**, compared to 76.6 without CV. **Adjusted R-squared** reduced to from 73 to **57.9** showing that even with the use of significant factors only we had some overfitting in the model (and we still might have some left, since 6 predictors for 47 data points does not comply with one in ten rule discussed above). As for the first **model with all 15 predictors**, the **R-squared** after CV was 41.9 instead of 80, and **Adjusted R-squared** - 33.3 instead of 70. This once again demonstrates overfitting with the first model and gives an example of how important it is to reduce multicollinearity and use only significant parameters to increase the power of prediction of a linear regression model.
+
+Further comments and reasoning for each step can be found in the solution below.
+
+## **Solution in R**
+
+### **Step 0: Load the libraries**
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(qcc)
+library(mctest)
+library(ppcor)
+library(car)
+library(psych)
+library(ggthemes)
+library(corrplot)
+library(DAAG)
+```
+
+### **Step 1: Load the dataset**
+
+```{r}
+data <- read.table("uscrime.txt", 
+                   header = TRUE, 
+                   stringsAsFactors = FALSE,
+                   sep = "", 
+                   dec = ".")
+head(data)
+```
+
+### **Step 2: Basic Explorations**
+
+Before performing regression, let's explore the variables and make some initial assumptions.
+
+No NA values in the data set:
+
+```{r}
+
+is.null(data)
+```
+
+```{r}
+describe.by(data)
+```
+
+We can see that our predictors have different scales. For example, U1 and U2 (unemployment of urban male aged 14-24 and 35-39) describe the same parameter (but for different age groups), but for U1 10% is displayed as 0.10, while for U2 10% is 10.0. 
+**Skewness**: few of the predictors have fairly symmetrical data points (**skewness between -0.5 and 0.5**), most are moderately skewed (**between -1 and -0.5 or 0.5 and 1**), Pop (state population, 1960), NW (percentage of nonwhites), and the response variable Crime are highly skewed (**less than -1 or greater than 1**).
+As for **kurtosis**, most parameters have platykurtic distribution(<3), while population is mesokurtic.
+
+Next, let's check boxplots for each data to visualize distribution of each predictor:
+
+```{r}
+#melt data for easier visualization
+melted<-melt(data)
+#boxplots
+box_plots <- ggplot(melted,
+                    aes(x=factor(variable), y=value))+
+              geom_boxplot(alpha=.5, fill="skyblue")+
+              facet_wrap(~variable, ncol=8, scale="free")+
+              theme_fivethirtyeight()
+
+    
+box_plots
+```
+
+We have one binary variable, So (indicator for southern states). Some variables might have outliers (Pop, NW), many are skewed to the right.
+
+Let's also plot a histogram with a density curve for each variable to see if any of them are normally distributed:
+
+```{r}
+hist_plots <- ggplot(melted,
+                    aes(x=value))+
+              geom_histogram(aes(y=..density..), colour="black", fill="white")+
+              geom_density(alpha=.3, color="skyblue", fill="skyblue")+
+              facet_wrap(~variable, scale="free")+
+              theme_fivethirtyeight()
+hist_plots
+```
+
+The graphs support our assumption that most variables are right-skewed. The only normally distributed variable appears to be Time.
+
+Even though the predictors and the response variable are not normally distributed, we can still do regression, since it does not require normal data.
+
+### **Step 3: Pairwise Correlation**
+
+Before building our regression model, I would like to look at the variables and check if any of them have pairwise correlations.
+This step is important for feature selection - removing one the highly correlative features from a pair helps us save more predictive power for the model.
+
+Knowing the description of the variables, I would suspect that the following predictors might have high correlation, since they are describing similar factors:
+
+- Po1 and Po2, as those are expenditures on police protection in two consequent years (1959, 1960)
+
+- U1 and U2, since they show urban male unemployment rate for two age groups (14-24, 35-39)
+
+- Wealth and Ineq, since wealth parameter of a family and it's inequality level seem to be describing the same parameter (inequality is probably (to a large extent) based on wealth)
+
+- NW and Ineq, more inequality in states with higher percentage of non-white population
+
+- NW and Ed, states with higher non-white population number might have less mean years of schooling
+
+- Ed-Wealth(Ineq) - states with wealthier population might have more mean years of schooling among adults
+- So-NW - southern states migh have had more non-white population in 1960s
+
+- Po1 / Po2 and wealth / ineq - people who have a job should be wealthier (hence higher equality for such individuals)
+
+Keeping that in mind, let's build a correlation plot for predictors to visually inspect which variables might have high correlation:
+
+```{r}
+corrplot(cor(data[,-16]), method='pie', type="upper")
+```
+
+Based on the plot, we can see that for the following pairs of variables correlation is very high:
+
+- Po1-Po2 (correlation is almost 1!)
+
+- Wealth-Ineq
+
+- U1-U2
+
+- So-Ed, So-NW 
+
+- Po1(Po2)-Wealth, Po1(Po2)-Ineq
+
+- NW-Ineq, NW-Wealth
+
+- Ed-NW, Ed-Wealth, Ed-Ineq
+
+Get exact correlation values to refer to further on:
+
+```{r}
+cm <- as.table(round(cor(data[,-16]),1))
+cm
+```
+
+**What does this mean for our model?**
+I will start with a regression using all parameters (to refer to it when trying other combinations of parameters), however we would probably **need to remove several parameters with high correlation from above** (1 from each pair). As we can see, the number of such parameters is high. This could be due to one or two parameters that correlates with many predictors at once and 'drags' other pairs into high correlation value, or it could be several predictors which we would need to remove from the model in order to give the prediction more power.
+Further on, I will also **test the model for multicollinearity** to support or refute assumptions from above.
+
+### **Step 4: Linear regression (all predictors)**
+
+Let's start with a regression model using all parameters and see how many of them would be significant, and how much data it would explain (R-squared):
+
+```{r}
+par(mfrow=c(2,2))
+#regression:
+model_1 <- lm(Crime ~ ., data=data)
+#get model summary
+summary(model_1, vif=TRUE)
+#plot results
+plot(model_1)
+```
+
+For a regression model with all parameters, we get R square od 79.76% (the model explains 79% of the data). We can see that only 6 predictors were found to be significant - only of of the police expenditures variables, one of the unemployment rates, Inequality and not wealth - so perhaps initial assumptions were correct and variables with high correlation to others should be removed.
+
+From the plots we can see that:
+**1. Residuals vs Fitted**: Residuals do not seem to show non-linear patterns - the relationship between predictor variables and response variable is linear, there is no distinct pattern, the residuals are spread around a horizontal line.
+**2. Normal Q-Q**: Residuals are normally distributed - they follow a straight line well
+**3. Scale-Location**: Horizontal line with randomly spread points confirms homoscedasticity - residuals are spread equally across the predictor range.
+**4. Residuals vs Leverage**: Checking for influential outlier cases, we do not have outlying values in the upper-right or lower-right corners (where outliers could be influential). This means that **outliers do not influence the regression line, so it would not make a difference if we removed / left them**. As for Cook's distance, all our values are beyond the 0.1 distance, so all cases are influential and all data points affect the fitted values.
+Based on the plot, we do not have problematic cases with the model.
+
+Let's make a prediction for the given data point using this model:
+
+- Create a data frame using give parameter values:
+
+```{r}
+test_data <- data.frame(M = 14.0,
+                        So = 0, 
+                        Ed = 10.0, 
+                        Po1 = 12.0, 
+                        Po2 = 15.5,
+                        LF = 0.640, 
+                        M.F = 94.0, 
+                        Pop = 150, 
+                        NW = 1.1, 
+                        U1 = 0.120, 
+                        U2 = 3.6, 
+                        Wealth = 3200, 
+                        Ineq = 20.1, 
+                        Prob = 0.040,
+                        Time = 39.0)
+test_data
+```
+
+- Make a prediction:
+
+```{r}
+pred_model_1 <- predict(model_1, test_data)
+pred_model_1
+```
+
+We have a very low predicted crime rate, 155 - it is a lot smaller than the mean of 905. 
+Since all of the parameter values of our test data point are **withing the range of other data points**, and the values of the test point are not abnormal, the problem lies with the model itself and the use of so many insignificant parameters. This is a demonstration why we **need to have only significant predictors in our regression model** - otherwise, predictions would be inaccurate just like this one.
+
+
+We can go ahead and build a regression model using only the 6 significant predictors.
+However, before that, I would like to dive deeper and examine our model for multicollinearity.
+
+### **Step 5: Detecting Multicollinearity**
+
+Since the diagnostic plots for our model with all parameters do not show any problematic cases, the reason for getting so many insignificant coefficients might be **multicollinearity**.
+
+To inspect this issue, let's start with refering to the correlation matrix
+
+```{r}
+cm
+```
+
+Once again we can see that there are pairs with high correlation.
+To narrow down the search, let's look into values with >0.8 correlation:
+- Po1-Po2 (1.0)
+- Ineq-Wealth (0.9)
+- NW-So (0.8)
+- Wealth-Po1(Po2) (0.8)
+- Ed-Ineq (0.8)
+
+Removing these problematic variables step-by-step, starting with the ones with higher values, might help us avoid multicollinearity.
+
+Let's perform further diagnostics.
+
+**Farrar-Glauber Test**
+
+Overall diagnostic for multicollinearity in the model:
+
+```{r}
+#Overall Multicollinearity Diagnostics Measures
+omcdiag(model_1)
+```
+
+5 out of 6 tests confirm multicollinearity in our model with all parameters.
+We have a zero value of standardized determinant, which signalizes that the set of vectors we used for our model are **linearly dependent**. Adn linear dependence defines multicollinearity. We also have a positive and high value for Farrar Chi-Square (497). All this implies presence of multicollinearity.
+
+Explore further to locate which variables cause multicollinearity:
+
+```{r}
+#Individual Multicollinearity Diagnostic Measures
+#locate where mc is
+imcdiag(model_1)
+```
+
+As we can see, the fact that So , Po1 , Po2 , LF , M.F , Pop , NW , U1 , U2 , Wealth , Time coefficients are non-significant may be due to multicollinearity.
+
+Let's inspect VIF values (**variance inflation factor**):
+VIF measure the effect of multicollinearity in the model on the variance of a coefficient in regression.
+**High VIF value** suggests that the independent variable has high collinearity with other variables of the model.
+VIF > 10 signalizes that there is a serious collinearity problem, and VIF > 5 gives reason to suspect collinearity. Ideally, we would have VIF lower than 5.
+
+In our model there is definitely a problem with Po1, Po2 and Wealth (all of them might cause multicollinearity, or incluson of one of them could increase values for others)
+
+```{r}
+vif_1 <- vif(model_1)
+barplot(vif_1,
+        main="VIF Values (model with all parameters)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2)
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+We can also suspect that we would need to remove Ineq, U1 or So in the future.
+
+As a third part of multicollinearity inspection, let's check the significance of partial correlation in the model:
+
+```{r}
+pcor(data[,-16], method = "pearson")
+```
+
+There is statistically significant partial correlation between ‘po1’ and ‘po2’.  The second high value is u1-u2 (6) and Wealth-Ineq(-4).
+
+### **Step 6: Dealing with Multicollinearity**
+
+Although we can skip this step and move on to a model with only 6 significant parameters (based on our first regression), I would like to try removing predictors that cause multicollinearity step-by-step to see how it affects R-squared and other coefficients.
+
+I will be excluding parameters based on VIF , recalculating the factor and removing another parameter (if necessary)
+
+1. Excluding Po2
+
+```{r}
+#regression:
+model_2 <- lm(Crime ~ .-Po2, data=data)
+#get model summary
+summary(model_2)
+#Check VIF
+as.table(round(vif(model_2),2))
+#check prediction
+pred_model_2 <- predict(model_2, test_data)
+pred_model_2
+```
+
+No significant change in R-squared, and still only 6 significant parameters (same ones). However, **excluding Po2 made a huge difference in VIF** - Po1 does not have a value over 100. Also, Po1's significance code has changes from 0.1 to 0.001.
+Removing Po1 has helped us get a better prediction of the response variable - 724 lies withing the range of the Crime variable, although it still seems to be on the lower side of the crime variable (the test point has relatively low Wealth and high Ineq coefficients and other parameters similar to the rest of our data, so I would expect the value to be at least around the median).
+
+
+
+```{r}
+vif_2 <- vif(model_2)
+barplot(vif_2,
+        main="VIF Values (-Po2)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2)
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+VIF plot has significantly changed -now most values are under 10, except for Wealth - our next candidate for exclusion.
+
+2. Excluding Wealth
+
+```{r}
+#regression:
+model_3 <- lm(Crime ~ .-Po2 -Wealth, data=data)
+#get model summary
+summary(model_3)
+#Check VIF
+as.table(round(vif(model_3),2))
+#check prediction
+pred_model_3 <- predict(model_3, test_data)
+pred_model_3
+```
+
+We still have the same 6 significant predictors. The **multiple R-Squared seems to be decreasing with each exclusion (80.31 -- 79.76 -- 79.27), but Adjusted R-Squared in increasing (70.78 -- 70.9 -- 71.1)** - so the explanation of the response variable using significant variables is increasing, as we exclude parameters with high VIF. Prediction is now closer to the mean value of Crime, meaning that removing insignificant variables has made our model more powerful in predictions.
+
+```{r}
+vif_3 <- vif(model_3)
+barplot(vif_3,
+        main="VIF Values (-Po2, -Wealth)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2)
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+ Now, all VIFs are under 10. However, we still have 2 similar parameters - U1 and U2, and U2 needs to be excluded, as its VIF is now the highest and it is not significant for our regression.
+ 
+3. Excluding U1
+
+```{r}
+#regression:
+model_4 <- lm(Crime ~ .-Po2 -Wealth -U1 , data=data)
+#get model summary
+summary(model_4)
+#Check VIF
+as.table(round(vif(model_4),2))
+#check prediction
+pred_model_4 <- predict(model_4, test_data)
+pred_model_4
+```
+
+```{r}
+vif_4 <- vif(model_4)
+barplot(vif_4,
+        main="VIF Values (-Po2 - Wealth - U1)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2)
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+
+
+Once again, we have a similar R-squared and adjusted R-squared (alhough adjusted R-squared also lowered a bit this time).
+We have seen that only 6 parameters are significant at each step, and although we managed to get rid of multicollinearity and reduce VIF (almost all predictors are <5 now, except for Ineq with 5.44), we did not get any new significant predictors. Although the prediction seems to be more accurate now (1225), we still need to leave only significant variables - with those that have low significance included, our model can fail to predict data points that are not so average and has predictors that are more on the extreme side. 
+
+### **Step 7: Final set of predictors**
+
+Since we have seen that each round only 6 predictors have stayed significant, lets use only them for our  final model to increase its prediction power.
+**The 6 significant factors are:**
+-M		percentage of males aged 14–24 in total state population
+-Ed		mean years of schooling of the population aged 25 years or over
+-Po1		per capita expenditure on police protection in 1960
+-U2		unemployment rate of urban males 35–39
+-Ineq		income inequality: percentage of families earning below half the median income
+-Prob		probability of imprisonment: ratio of number of commitments to number of offenses
+
+```{r}
+par(mfrow=c(2,2))
+#regression:
+model_final <- lm(Crime ~ M+Ed+Po1+U2+Ineq+Prob , data=data)
+#get model summary
+summary(model_final)
+#Check VIF
+as.table(round(vif(model_final),2))
+#check prediction
+pred_model_final <- predict(model_final, test_data)
+pred_model_final
+#plot results
+plot(model_final)
+```
+
+Although we have a lower Multiple R-Squared value, our **Adjusted R-squared is at 73%** - the highest it has been.
+**With the final set of predictors, our prediction for the test data point is a Crime rate of 1304.** 
+
+Plots for the final model do not indicate any problems:
+**1. Residuals vs Fitted**: Residuals show linear patterns - the relationship between the response and predictors is linear and can be explained with linear regression.
+**2. Normal Q-Q**: Residuals are normally distributed.
+**3. Scale-Location**: The line is horizontal and the points are spread randomly across it - homoscedasticity, residuals are equally spread across the range of response variable.
+**4. Residuals vs Leverage**: No outlying values in the upper-right or lower-right corners (outliers are not influential to the regression line and their removal wont play a role). Most values are beyond Cook's distance, so all cases influence the fitted values. It seems that value 18 is now found to be very influential, however we are not going to experiment with its removal - we have only few data points, and removing this insight into linear relationship of the predictors and response might make our future predictions for similar to n.18 points less accurate.
+
+```{r}
+vif_final <- vif(model_final)
+barplot(vif_final,
+        main="VIF Values (Final Model)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2)
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+In our final model, VIF values for each of the variables is lower than 5, meaning that the variables do not show collinearity with other predictors.
+To make sure that there is no multicollinearity in the final model, I will run the multicollinearity diagnostics tests again:
+
+```{r}
+#Overall Multicollinearity Diagnostics Measures
+omcdiag(model_final)
+```
+
+Most of the tests did not detect multicollinearity, and that is supported by our VIF values. However,  I would like to test the varaibles as well to make sure of that:
+
+```{r}
+#Individual Multicollinearity Diagnostic Measures
+#locate where mc is
+imcdiag(model_final)
+```
+
+Test results tell us that all predictors are significant and collinearity is not detected.
+
+For our final linear regression model that explains 76% of the data (R-squared), there are 6 significant predictors:
+
+-M,	percentage of males aged 14–24 in total state population
+-Ed,	mean years of schooling of the population aged 25 years or over
+-Po1,	per capita expenditure on police protection in 1960
+-U2,	unemployment rate of urban males 35–39
+-Ineq,	income inequality: percentage of families earning below half the median income
+-Prob,	probability of imprisonment: ratio of number of commitments to number of offenses
+
+We have an R-squared of 76, and Adjusted R-Squared of 73. However, it is an estimation based on the training data, and considering that we have few data points (47), **overfitting** might be present in our model. This means that we cannot use the above Crime rate prediction and we need to estimate the true quality of our model.
+
+### **Step 8: 5-fold Cross Validation**
+
+To estimate the quality of the model, I decided to perform 5-fold cross validation. I chose Cross-Validation not only because it is the general practice for linear regression quality estimation, but also because AIC and BIC may sometimes lead us toward choosing an over-complicated or over-simplified model respectively. Moreover, both AIC and BIC are related to cross-validation, but cross-validation does not produce their common problems.
+
+For cross-validation, I chose 5 as the number of folds instead of the commonly used 10 because of a small number of data points in our set (we only have 47 data points). Splitting data into too many folds would mean having 'incomplete' representation of data in each of the folds and having more variability caused by such a small range of each predictor in the fold.
+
+Although the model with our final set of 6 variables was found to be the one with highest significance of parameters, I will run cross-fold validation on the first model with all 15 predictors as well to see how  true accuracy compares to the R-squared values that we got on training data.
+
+I will start with the final set of predictors and then go back to the first model.
+
+```{r}
+cv_final <- cv.lm(data,
+                  model_final,
+                  m=5) #m is the number of folds
+cv_final
+```
+
+We get an overall mean squared prediction error in cross-validated model with 6 significant predictor of 53586.
+
+Let's calculate the new R-squared and adjusted R-squared:
+- first, we calculate the sum of squared errors (residuals) multiplying the mean squared error by the number of data points
+- then, we calculate the sum of squares total (SST), the squared differences between the response variable and its mean.
+- finally, we calculate R-squared using the formula (1-SSEresiduals/SST)
+
+```{r}
+#sum of squared errors (residuals)
+sseres_cv_final <- nrow(data)*attr(cv_final,"ms")
+sseres_cv_final
+
+#sum of squares total
+sst <- sum((data$Crime - mean(data$Crime))^2)
+sst
+
+#R-squared
+R2_cv_final <- 1-sseres_cv_final/sst
+R2_cv_final
+
+#adjusted R-squared
+R2_adj_cv_final <- 1 - (((1-R2_cv_final)*(nrow(data)-1))/(nrow(data)-6-1)) #6 predictors
+R2_adj_cv_final
+```
+
+**After cross-validation, the R-squared for the model with 6 significant variables decreased from 76.6 to 63.4**. This is a sign that our model before cross validation had overfitting, and it shows how important it is to validate even models that seem to make good predictions. **Adjusted R-squared decreased to 57.9 from 73**, which also suggests a lot of overfitting in the initial 6-factor model.
+
+Let's repeat the procedure for the model with all parameters:
+
+```{r}
+cv_model1 <- cv.lm(data,
+                  model_1,
+                  m=5) #m is the number of folds
+cv_model1
+```
+
+The mean squared prediction error in cross-validated model with all predictors is significantly higher compared to the model with only significant parameters - 84948 instead of 53586.
+
+Let's see how the R-squared and adjusted R-square compare to our prevous results:
+
+```{r}
+#sum of squared errors (residuals)
+sseres_cv_model1 <- nrow(data)*attr(cv_model1,"ms")
+sseres_cv_model1
+
+#R-squared
+R2_cv_model1 <- 1-sseres_cv_model1/sst
+R2_cv_model1
+
+#adjusted R-squared
+R2_adj_cv_model1 <- 1 - (((1-R2_cv_model1)*(nrow(data)-1))/(nrow(data)-6-1))
+R2_adj_cv_model1
+```
+
+There is a drastic difference compared to the non-validated model: R-squared reduced from 80.3 to 41.9, and Adjusted R-squared from 70.8 to 33.3. It shows that the initial model had a lot of overfitting, which is probably a reason why the initial R-squared was 80, higher than the same value for a 6-parameter model (76.6) - the model was fitting not only significant values, but also a lot of randomness.
+
+This once again shows how important it is to: 
+a) Build a linear regression model with significant parameters to give the model more power for prediction
+b) Validate a model after fitting it on a training data set to reduce overfitting and estimate its real quality.
+
+
+
