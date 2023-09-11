@@ -1,0 +1,1853 @@
+---
+title: "Regression Tree and Risk Assessment Models"
+author: "Alena Fedash"
+always_allow_html: true
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+date: "2022-10-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Please find below my step-by-step solution in R with explanations and comments for each step.**
+
+# **Part 1.A Regression Trees**
+
+## **Step 0: Load the libraries**
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(qcc)
+library(mctest)
+library(ppcor)
+library(car)
+library(psych)
+library(ggthemes)
+library(corrplot)
+library(DAAG)
+library(GGally)
+library(caret)
+library(psych)
+library(ggpubr)
+library(tree)
+library(randomForest)
+library(vip)
+library(rsample) 
+library(ROCR)
+library(gridExtra)
+
+```
+
+## **Step 1: Load the dataset**
+
+```{r}
+data <- read.table("uscrime.txt", 
+                   header = TRUE, 
+                   stringsAsFactors = FALSE,
+                   sep = "", 
+                   dec = ".")
+head(data)
+```
+
+```{r}
+test_data <- data.frame(M = 14.0,
+                        So = 0, 
+                        Ed = 10.0, 
+                        Po1 = 12.0, 
+                        Po2 = 15.5,
+                        LF = 0.640, 
+                        M.F = 94.0, 
+                        Pop = 150, 
+                        NW = 1.1, 
+                        U1 = 0.120, 
+                        U2 = 3.6, 
+                        Wealth = 3200, 
+                        Ineq = 20.1, 
+                        Prob = 0.040,
+                        Time = 39.0)
+test_data
+```
+
+## **Step 2: Basic Explorations**
+
+Plots and basic data description to refer to:
+
+```{r}
+describe.by(data)
+```
+
+
+```{r}
+#melt data for easier visualization
+melted<-melt(data)
+#boxplots
+box_plots <- ggplot(melted,
+                    aes(x=factor(variable), y=value))+
+              geom_boxplot(alpha=.5, fill="skyblue")+
+              facet_wrap(~variable, ncol=8, scale="free")+
+              theme_fivethirtyeight()
+
+    
+box_plots
+#distribution plots with density
+hist_plots <- ggplot(melted,
+                    aes(x=value))+
+              geom_histogram(aes(y=..density..), colour="black", fill="white")+
+              geom_density(alpha=.3, color="skyblue", fill="skyblue")+
+              facet_wrap(~variable, scale="free")+
+              theme_fivethirtyeight()
+hist_plots
+```
+
+```{r}
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(data[,-16])
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(data)
+corrplot(cor(data[,-16]), 
+         method='pie', 
+         type="upper", 
+         #order="hclust",
+         p.mat = p.mat, 
+         sig.level = 0.1,
+         insig = "blank")
+```
+
+
+
+
+## **Step 3: Fitting an unpruned regression tree to data**
+
+To start, we build a basic tree model, which we can then cross-validate and prune. 
+I decided to grow two trees - one with default parameters of the tree() function, and another one with manually set control parameters. I will then compare both trees to check which one has better performance, so that we can improve it to find the best model.
+
+Tree n.1 with default settings:
+
+```{r}
+set.seed(111)
+
+tree1 <- tree(Crime~.,
+              data=data)
+summary(tree1)
+```
+
+The first tree used only four predictors:
+
+- Po1, expenditure on police protection in 1960
+
+- Pop, population of state
+
+- LF, labour force participation rate
+
+- NW, number of non-whites per 1000 people
+
+The tree has **7 terminal nodes** (leaves). **The residual mean deviance (how well the model can predict the response variable)** is 47390. **The lower this value, the better**, so we will compare it to the second model.
+
+Let's visualize the first tree - we can see that Po1 is the major branching factor:
+
+```{r}
+plot(tree1)
+text(tree1)
+title(main = "Unpruned Regression Tree (1)")
+```
+
+```{r}
+tree1$frame
+```
+
+
+Check the split information of the first tree:
+
+We can see that **each of the terminal nodes has at least 10 data points**, which is a good ~20% share from the data.
+
+This is what I would like to experiment with for the second tree. By the rule of thumb, **each leaf should have at least 5% of the data points**. Of course, with such a small data set, lowering this limit to 5% (~3 data points) could lead to overfitting. However, I would still like to see the difference this would make to the tree. I will set the minimal number of data points in each terminal node to 3 and set withing-node deviance to 1%, meaning that to split the root node, we need at least a 1% change in the model due to the split:
+
+```{r}
+set.seed(111)
+tree_ctrl <- tree.control(nobs=nrow(data), 
+                          mincut=3, 
+                          mindev=0.01)
+tree2 <- tree(Crime~.,
+                   data=data,
+                   control=tree_ctrl
+                   )
+summary(tree2)
+
+```
+
+This time, there are 8 terminal nodes and 7 predictors used:
+
+- Po1, expenditure on police protection in 1960
+
+- Pop, population of state
+
+- Ed, mean years of schooling
+
+- NW, number of non-whites per 1000 people
+
+- M, percentage of males 14-24 y.o.
+
+- Wealth, median of assets or household income
+
+- Prob, probability of imprisonment
+
+With manually set control parameters, the **residual mean deviance** has reduced to 20950, compared to 47390 with the first model, suggesting that this model predicts response values better/
+
+```{r}
+plot(tree2)
+text(tree2)
+title(main = "Unpruned Regression Tree (2)")
+```
+
+Compared to the previous tree, this one uses other factors on the third level following Pop and Wealth.
+Let's check how many data points there are for each node:
+
+```{r}
+tree2$frame
+```
+
+Due to the manually set parameters, this tree has 3-4 points on some of the leaves. This could be a sign of overfitting - we would have to check whether this tree explains the data better due to it in the next steps.
+
+## **Step 4: Cross-validation**
+
+To understand whether we should prune the tree to improve the model and define which pruning would be good for our tree, we need to cross-validate the model:
+
+
+```{r}
+set.seed(11)
+tree1_cv <- cv.tree(tree1)
+tree1_cv
+```
+
+We can use the results above to plot RMSE (root mean square error) after cross-validation with tree size:
+
+```{r}
+plot(tree1_cv$size, sqrt(tree1_cv$dev / nrow(data)), type = "b",
+     xlab = "Tree Size", ylab = "CV-RMSE")
+```
+
+As we can see on the plot, the tree of size 7 seems to have the lowest RMSE, however the one with size 6 is not very different. We can **either leave the tree as it is, or prune it to size 6**. **The pruned tree would be smaller and easier to interpret**, so perhaps at such a small RMSE cost we should prune it.
+
+Before making a decision about pruning, let's check CV results for the second tree:
+
+```{r}
+set.seed(111)
+tree2_cv <- cv.tree(tree2)
+tree2_cv
+plot(tree2_cv$size, sqrt(tree2_cv$dev / nrow(data)), type = "b",
+     xlab = "Tree Size", ylab = "CV-RMSE")
+```
+
+As for the second tree, the lowest RMSE is achieved at tree size 7 - we need to prune it to this size.
+
+**Plan for the next steps:**
+
+- First, we prune both trees (Tree 1 to size 6, Tree 2 to size 7)
+
+- Estimate model quality on training data and using CV, and compare the models
+
+Then, if the results are bad, we should consider **building linear regression models on leaves' ends**. However, since our data set is so small, it would be useless to build linear regression on 5-10 data points of each leaf. So:
+
+- Prune one of the trees to size 2 (split based on Po1 only) - both trees have relatively low RMSE for size two, so in such a case we might benefit from pruning to it.
+
+- Build linear regressions for each leaf, cross-validate, estimate the quality
+
+- If only few factors are significant - reduce models to those
+
+- If such a problem persists - use PCA, then cross-validate and estimate quality
+
+
+## **Step 5: Pruning**
+
+Lets's prune the trees:
+
+```{r}
+#prune
+tree1_pruned <- prune.tree(tree1, best=6)
+summary(tree1_pruned)
+#plot
+plot(tree1_pruned)
+text(tree1_pruned)
+title(main = "Pruned Regression Tree (1)")
+```
+
+We can see that after pruning the LF split on the left is gone.
+
+Prune the second tree:
+
+```{r}
+#prune
+tree2_pruned <- prune.tree(tree2, best=6)
+summary(tree2_pruned)
+#plot
+plot(tree2_pruned)
+text(tree2_pruned)
+title(main = "Pruned Regression Tree (2)")
+```
+
+And here, on the other hand, only the right side of the Po1 has further splits.
+
+## **Step 6: Estimating quality**
+
+Now we have 4 trees - two unpruned (tree 1 and tree 2), and two pruned (by 1 split each).
+Let's estimate the quality of each and compare to see how pruning has affected the result.
+
+**Tree 1 (unpruned):**
+
+```{r}
+set.seed(11)
+#predictions
+tree1pred <- predict(tree1)
+
+#plot predicted vs actual Crime values
+plot(data$Crime, tree1pred, xlab="Actual Values", ylab="Predicted values")
+abline(0,1)
+```
+
+As we can see on the plot, although some points are close to the line, in general predictions are not very good, and even the range of predicted values is significantly smaller compare to the actual ones (it ends at ~1550, while some actual values are at 2000).
+
+Check the residuals:
+
+```{r}
+plot(data$Crime, scale(tree1pred - data$Crime),  xlab="Actual values", ylab="Standardized Residuals")
+abline(0,0)
+```
+
+The x and y axis are balanced and there doesn't seem to be a non-linear trend, although some residuals are further from the line than the others.
+
+Find R-Squared:
+
+
+```{r}
+#Calculate SSres
+tree1_ssr <- sum((tree1pred-data$Crime)^2)
+tree1_ssr
+#SSTot
+tree1_SStot <- sum((data$Crime - mean(data$Crime))^2)
+tree1_SStot
+#R2
+tree1_r2 <- 1 - tree1_ssr/tree1_SStot
+tree1_r2
+```
+
+For the first tree, we have **R-squared of 72% on training data**. Can it be due to overfitting?
+We can compare each of the nodes with a cross-validated model by using the Prune function on the tree. We can then compare the values with Sum of Squares Total - If a cross validated model has values of deviation bigger than that, the model is probably overfitting:
+
+```{r}
+#sst for comparison
+tree1_SStot
+#values for each node of tree without CV
+prune.tree(tree1)$dev
+#and for the CV model
+tree1_cv$dev
+
+```
+
+As we can see, the deviations for the CV Models are extremely large compared to the one fitted on training data -so **R-squared of 72% is just a sign of huge overfitting, not a good model**, and even SST is lower than those deviations.
+
+Now we repeat the same procedure for Tree2 and the pruned trees.
+
+**Tree 2 (unpruned)**
+
+Compared to unpruned tree 1, the predicted values here are much closer to the actual ones:
+
+```{r}
+set.seed(11)
+#predictions
+tree2pred <- predict(tree2)
+
+#plot predicted vs actual Crime values
+plot(data$Crime, tree2pred, xlab="Actual Values", ylab="Predicted values")
+abline(0,1)
+```
+
+The residuals also look slightly better, the range is a bit smaller (-2 to 2 compared to -2 to 3 with Tree 1)
+
+```{r}
+plot(data$Crime, scale(tree2pred - data$Crime),  xlab="Actual values", ylab="Standardized Residuals")
+abline(0,0)
+```
+
+SSTotal is the same, but **R2 is 88% on training data**.
+
+```{r}
+#Calculate SSres
+tree2_ssr <- sum((tree2pred-data$Crime)^2)
+tree2_ssr
+#SSTot
+tree2_SStot <- sum((data$Crime - mean(data$Crime))^2)
+tree2_SStot
+#R2
+tree2_r2 <- 1 - tree2_ssr/tree2_SStot
+tree2_r2
+```
+
+Is the overfitting as bad here as with Tree1?
+
+```{r}
+#sst for comparison
+tree2_SStot
+#values for each node of tree without CV
+prune.tree(tree2)$dev
+#and for the CV model
+tree2_cv$dev
+```
+
+Yes, we also have a lot of overfitting - this model is no good, just like the first tree.
+
+Check if something would be different for pruned trees:
+
+**Tree 1 (pruned)**
+
+```{r}
+set.seed(11)
+#predictions
+tree1pruned_pred <- predict(tree1_pruned)
+
+#plot predicted vs actual Crime values
+plot(data$Crime, tree1pruned_pred, xlab="Actual Values", ylab="Predicted values")
+abline(0,1)
+
+#residuals plot
+plot(data$Crime, scale(tree1pruned_pred - data$Crime),  xlab="Actual values", ylab="Standardized Residuals")
+abline(0,0)
+
+#Calculate SSres
+tree1pruned_ssr <- sum((tree1pruned_pred-data$Crime)^2)
+tree1pruned_ssr
+#SSTot
+tree1pruned_SStot <- sum((data$Crime - mean(data$Crime))^2)
+tree1pruned_SStot
+#R2
+tree1pruned_r2 <- 1 - tree1pruned_ssr/tree1pruned_SStot
+tree1pruned_r2
+
+#sst for comparison
+tree1pruned_SStot
+#values for each node of tree without CV
+prune.tree(tree1_pruned)$dev
+#cross-validate:
+tree1pruned_cv <- cv.tree(tree1_pruned)
+tree1pruned_cv$dev
+```
+
+Unfortunately, for the pruned tree the situation is not better - deviations of the cross-validated model are huge and even larger than the total error - so a 70% R-squared is due to overfitting.
+
+**Tree 2 (pruned)**
+
+```{r}
+set.seed(11)
+#predictions
+tree2pruned_pred <- predict(tree2_pruned)
+
+#plot predicted vs actual Crime values
+plot(data$Crime, tree2pruned_pred, xlab="Actual Values", ylab="Predicted values")
+abline(0,1)
+
+#residuals plot
+plot(data$Crime, scale(tree2pruned_pred - data$Crime),  xlab="Actual values", ylab="Standardized Residuals")
+abline(0,0)
+
+#Calculate SSres
+tree2pruned_ssr <- sum((tree2pruned_pred-data$Crime)^2)
+tree2pruned_ssr
+#SSTot
+tree2pruned_SStot <- sum((data$Crime - mean(data$Crime))^2)
+tree2pruned_SStot
+#R2
+tree2pruned_r2 <- 1 - tree2pruned_ssr/tree2pruned_SStot
+tree2pruned_r2
+
+#sst for comparison
+tree2pruned_SStot
+#values for each node of tree without CV
+prune.tree(tree2_pruned)$dev
+#cross-validate:
+tree2pruned_cv <- cv.tree(tree2_pruned)
+tree2pruned_cv$dev
+```
+
+No luck with this tree either - an R-squared is 80% on training data, but the deviations are larger than the SSTotal.
+
+As we have seen, overfitting is once again the problem for our model - mostly, it is due to the size of our data set. Using less factors in a tree would ruin the accuracy of predictions, and increasing them would lead to overfitting.
+
+**What are the next steps?**
+
+We could stop here and choose one of the 4 trees we have - perhaps the first one that is unpruned, although all of the are hugely overfitted and bad models (no big differences to consider when choosing).
+
+To improve the model, if we had more data, we could build linear regression models for each leaf. However, we only have 3-10 data points on each end - so building a regression would be useless - we would have too many predictors and very few data points, which would cause the same overfitting problem. 
+
+Therefore, we switch to plan B mentioned in the previous step - **Pruning one of the trees to size two (1-branch tree with 2 leaves)**.
+
+Once we do that, we **build linear regression for each step, cross-validate, estimate the quality and use PCA, if needed**.
+
+## **Step 7: Pruning to 1-branch tree with 2 leaves**
+
+```{r}
+#prune
+final_tree <- prune.tree(tree1,best=2)
+#plot
+plot(final_tree)
+text(final_tree)
+title(main = "Pruned Regression Tree")
+```
+
+Now our tree braches only on Po1, police expenditure in 1960.
+
+Let's estimate the quality - we do not expect it to be any better than the previous model, since we are going to add regressions to each leaf anyway:
+
+```{r}
+set.seed(11)
+#predictions
+tree_pred <- predict(final_tree)
+
+#Calculate SSres
+tree_ssr <- sum((tree_pred-data$Crime)^2)
+
+#SSTot
+tree_SStot <- sum((data$Crime - mean(data$Crime))^2)
+
+#R2
+tree_r2 <- 1 - tree_ssr/tree_SStot
+tree_r2
+
+#sst for comparison
+tree_SStot
+#values for each node of tree without CV
+prune.tree(final_tree)$dev
+#cross-validate:
+tree_cv <- cv.tree(final_tree)
+tree_cv$dev
+```
+
+On training data, we have an R-squared on 36%. And deviations after cross-validation are still bigger than SST. 
+However, we have 23 and 24 values in each leaf, and **can now build a linear regression model**:
+
+```{r}
+final_tree$frame
+```
+
+## **Step 8: Linear Regression for Leaf no.1**
+
+### **Checking for multicollinearity**
+
+Before performing LR, we as usual check correlation of variables to detect possible issues in the model.
+
+```{r}
+#get the data for leaf 1
+d1 <- data[which(final_tree$where==2),]
+head(d1)
+```
+
+I will check this with a correlation plot combined with significance of correlation (via p values):
+
+```{r}
+#p values
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(d1[,-16])
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(mtcars)
+
+#corrplot
+corrplot(cor(d1[,-16]), 
+         method='pie', 
+         type="upper", 
+         #order="hclust",
+         p.mat = p.mat, 
+         sig.level = 0.1,
+         insig = "blank")
+```
+
+As before in the full data set, we have quite a few pairs of predictors with correlation greater than 0.5 - we will definitely have to remove some of the variables to avoid multicollinearity in the model
+
+### **Linear Regression**
+
+We have 23 data points, and according to the **1:10 ration**, it's better for us to have ~2-3 predictors in the model. 
+To quickly figure out which predictors should be used, we build a model with all parameters first:
+
+```{r}
+#l1m1 - leaf 1 model 1
+l1m1 <- lm(Crime~., data=d1)
+summary(l1m1)
+```
+
+Only **four factors are significant, and R2=88% is probably due to overfitting**. Let's reduce factors to significant-only and repeat the process until all factors of the model are significant:
+
+```{r}
+l1m2 <- lm(Crime~Ed+Pop+Prob+Time, data=d1)
+summary(l1m2)
+```
+
+Now only 2 factors are significant, reduce again:
+
+```{r}
+l1m3 <- lm(Crime~Pop+Time, data=d1)
+summary(l1m3)
+```
+
+And now only 1 - so we leave just one factor, Pop, population of state:
+
+```{r}
+l1m4 <- lm(Crime~Pop, data=d1)
+summary(l1m4)
+```
+
+**R2=29.6% on training data**. To reduce overfitting, lets run cross validation and compare. LOO CV is more appropriate for this case, because we have very few data points - more samples will be used in each repetition with LOO:
+
+```{r}
+l1m4cv <- cv.lm(d1, l1m4, m=nrow(d1), plotit=F, printit=F)
+#R2
+1 - attr(l1m4cv,"ms")*nrow(d1)/sum((d1$Crime - mean(d1$Crime))^2)
+```
+
+**For a Cross-Validated Linear Regression Using 1 Factor Population for Lead no.1, we have R-squared of 18%**. This is a bad quality, and I will try to improve it using PCA:
+
+### **PCA**
+
+```{r }
+l1pca <- prcomp(~., data=d1[,-16], scale=T)
+screeplot(l1pca)
+```
+
+After the 4th component values are lower than 1. So we can build a model using 4 PCs and then remove them one by one if not all will be significant:
+
+```{r}
+pca1m1 <- lm(Crime~., data=as.data.frame(cbind(Crime=d1[,16], l1pca$x[,1:4])))
+summary(pca1m1)
+```
+
+Only one component is significant, so we leave PC2 only:
+
+```{r}
+pca1m2 <- lm(Crime~., data=as.data.frame(cbind(Crime=d1[,16], l1pca$x[,2])))
+summary(pca1m2,2)
+```
+
+**With PCA, we have R2 of 38% on training data**. Let's check if the cross validated model would have a better result compared to cross-validated trees with 6 or 7 branches:
+
+```{r}
+pca1cv <- cv.lm(as.data.frame(cbind(Crime=d1[,16], l1pca$x[,2])),pca1m2,m=nrow(d1), plotit=F, printit = F)
+
+#calculate R2
+
+1 - attr(pca1cv,"ms")*nrow(d1)/sum((d1$Crime - mean(d1$Crime))^2)
+
+```
+
+**Cross-validated model using PCA is shows a significant improvement in R2 - 30.4%, although its R2 was not so high on training data. This suggests that this model has less overfitting, and 30% is more of a real result**.
+
+To sum up, for the first leaf of the model with 1 branch and 2 leaves, we should use linear regression with pca, using PC2 as the factor.
+
+Unscale to get model equation:
+
+```{r}
+#getting rid of 'e'values in output
+options("scipen"=100, "digits"=4)
+#getting coefs
+int_sc <- summary(pca1m2)$coefficients[1]
+coefs1_sc <- summary(pca1m2)$coefficients[2]
+a_sc <- l1pca$rotation[,2]
+#unscaling
+unsc_coefs <- a_sc/l1pca$scale
+unsc_coefs
+unsc_int <-int_sc - sum(a_sc*l1pca$center/l1pca$scale)
+unsc_int
+```
+
+
+## **Step 9: Linear Regression for Leaf no.2**
+
+### **Checking for multicollinearity**
+
+As for leaf 2, let's start with multicollinearity check using corrplot with p-value for correlation to exclude insignificant pairs of predictors.
+
+```{r}
+#get the data for leaf 2
+d2 <- data[which(final_tree$where==3),]
+head(d2)
+```
+
+Corrplot:
+
+```{r}
+#p values
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(d2[,-16])
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(mtcars)
+
+#corrplot
+corrplot(cor(d2[,-16]), 
+         method='pie', 
+         type="upper", 
+         #order="hclust",
+         p.mat = p.mat, 
+         sig.level = 0.1,
+         insig = "blank")
+```
+
+Although for leaf two we have fewer correlated pairs, there still are some - especially among variable that describe similar things (inequality and wealth, Po1 and Po2 - police protection expenditure, U1 and U2). 
+Let's see if we would have a better linear regression
+
+### **Linear Regression**
+
+Once again, although predictors-data points ration is far from the perfect 1:10, let's start with a linear regression using all parameters:
+
+```{r}
+#l1m1 - leaf 1 model 1
+l2m1 <- lm(Crime~., data=d2)
+summary(l2m1)
+```
+
+Only **one factor is significant, Inequality, and R2=88% on training data is definitely because of overfitting**. One factor would probably be unhelpful just like in the ifrst leaf's case, so I will leave 2 predictors with the smallest Pr>|t| value, Inequality and Po1, since it has the second smallest value:
+
+```{r}
+l2m2 <- lm(Crime~Ineq+Po1, data=d2)
+summary(l2m2)
+```
+
+This time both factors are significant, and **R2 on training data is 42%**. Let's cross-validate the model to see if it's actually bad and this value is due to overfitting only:
+
+```{r}
+l2m2cv <- cv.lm(d2, l2m2, m=nrow(d2), plotit=F, printit=F)
+#R2
+1 - attr(l2m2cv,"ms")*nrow(d2)/sum((d2$Crime - mean(d2$Crime))^2)
+```
+
+Yes, R2 **reduced to 15% after CV, so the model was overfitting**. We cannot use it for the second leaf. Let's try a remedy - PCA:
+
+### **PCA**
+
+```{r }
+l2pca <- prcomp(~., data=d2[,-16], scale=T)
+screeplot(l2pca)
+```
+
+The first 5 components have values over 1 on screeplot, so we start with them and reduce their number depending on significance:
+
+```{r}
+pca2m1 <- lm(Crime~., data=as.data.frame(cbind(Crime=d2[,16], l2pca$x[,1:5])))
+summary(pca2m1)
+```
+
+Only the last, 5th component, is significant, so we rebuild the model using only PC5:
+
+```{r}
+pca2m2 <- lm(Crime~., data=as.data.frame(cbind(Crime=d2[,16], l2pca$x[,5])))
+summary(pca2m2,2)
+```
+
+**With PCA, we have R2 of 67% on training data**. Let's cross-validate the model to find the real R2:
+
+```{r}
+pca2cv <- cv.lm(as.data.frame(cbind(Crime=d2[,16], l2pca$x[,5])),pca2m2,m=nrow(d2), plotit=F, printit = F)
+
+#calculate R2
+
+1 - attr(pca2cv,"ms")*nrow(d2)/sum((d2$Crime - mean(d2$Crime))^2)
+
+```
+
+**Cross-validated model using PCA has only a slight change in R2 - it reduced to 61%. This is the best quality we've had so far, so we leave this model as the final one for leaf 2**.
+
+Let's get the equation for leaf 2:
+
+```{r}
+#getting rid of 'e'values in output
+options("scipen"=100, "digits"=4)
+#getting coefs
+int_sc <- summary(pca2m2)$coefficients[1]
+coefs1_sc <- summary(pca2m2)$coefficients[2]
+a_sc <- l2pca$rotation[,5] #fifth PC
+#unscaling
+unsc_coefs <- a_sc/l2pca$scale
+unsc_coefs
+unsc_int <-int_sc - sum(a_sc*l2pca$center/l2pca$scale)
+unsc_int
+```
+
+
+## **Step 10: Conclusion: Choosing the best model**
+
+We first started by growing **two regression trees** -  one with default tree() function settings, and another with manual setting of minimum 3 data points in each leaf (5% rule), which produced two slightly different trees with 7 and 8 nodes:
+
+```{r}
+par(mfrow=c(1,2)) 
+plot(tree1)
+text(tree1)
+title(main = "Unpruned Regression Tree (1)")
+plot(tree2)
+text(tree2)
+title(main = "Unpruned Regression Tree (2)")
+```
+
+Based on **RMSE vs Tree size plot** we saw that pruning was not necessary for tree 1, as the number of nodes we already had provided the best possible explanation. However, we still pruned tree 1 by 1 node - the loss of explanation was minimal, but a smaller tree meant easier interpretation. Tree 2 was pruned to 7 nodes, since that size had the lowest RMSE.
+
+We then estimated the quality for each tree of the four we had (pruned and unpruned) on training data, and after that compared the result to cross-validated models. Although all 4 trees (Tree 1, 2, pruned and unpruned) had R-squared values of 70-88% on training data, after cross validation deviation values for each of the tree nodes were extremely high, higher than even the SSTotal. That meant that there was huge overfitting and we couldn't use such trees.
+
+As a remedy, the only option was to build linear regressions on leaves. However, due to only 47 data points in the set, we had 5-10 point on each leaf, so linear regression would have been useless with such a small set and would have led to overfitting.
+This is why we pruned to a **1-branch tree with 2 leaves**, where the main split was based on police expenditure in 1960 - this tree is part of our final model:
+
+```{r}
+plot(final_tree)
+text(final_tree)
+title(main = "Pruned Regression Tree")
+```
+
+On each of the leaves, we built linear regressions, they ended up having only one and two predictors correspondingly for leaf 1 and 2, and after cross-validation they had low R2 of 18% and 15%.
+
+To fix that, we performed PCA and built a regression using that. For leaf 1, we started with the first four PCs (based on Screeplot, for PC 1-4 value was >1), but the final model used only the second PC, as other PCs were insignificant for our linear regression. After cross-validation, **R2 was estimated at 30%**, which was a good result compared to what we had before that, and not a significant decline from 38% for R2 on training data. Therefore, for leaf 1 (Po1 <7.65 == YES) the equation for linear regression (unscaled) is:
+
+**Crime ~ 671 + 0.189M + 0.368So - 0.023Ed + 0.339Po1 + 0.326Po2 + 2.812LF - 0.0952MF + 0.0301Pop + 0.0194NW- 23.721U1 - 0.349U2 + 0.000059Wealth + 0.0175Ineq - 7.065Prob + 0.053Time**
+
+On the second leaf we first built a linear regression using the first 5 Pricnipal Components (based on Screeplot, the first 5 PCs had values >1), but as with leaf one, only one component was significant (PC5), so we used it for the final model. On training data we had R2 of 67%, and **after cross-validation R2 was 61.4%** - a good result, considering how few data points we had. After unscaling, the equation for linear equation on leaf 2 is:
+
+**Crime ~ 1101 + 0.4899M + 0.1879So + 0.144Ed + 0.153Po1 + 0.138Po2 + 8.782Lf + 0.108MF + 0.004Pop + 0.044NW + 3.7498U1 + 0.147U2 -0.0016Wealth + 0.112Ineq - 3.551Prob + 0.027Time**.
+
+Although the accuracy of the model is not ideal, this is the best it can get, due to the low number of data points and a big number of predictors (47 vs 15, when the ideal data-predictor ration is 10:1). However, the benefit of our model is that it is easier to explain it. Interpreting the model, we can say that the main predictor of Crime rate is Per capita police protection expenditure in 1960 - it is the first parameter by which the initial split is made. If the police expenditure in a state is lower than 7.65 per capita, then we can make a prediction using the first (left) leaf, which has a rough prediction of 670 for states in such a category. To make the prediction more accurate, we then use the linear regression model, where the initial predicted Crime value (if other factors = 0) is 671 crimes. The number of Crimes in a state increases by the following parameters (the bigger the value of parameters for the state, the more the crime rate increases: share of males aged 14-24, Southern state (=yes), Police expenditure in 1960 and in 1959 as well, participation of civilian urban males 14-24 y.o. in labour force, state population in 1960, percentage of nonwhites in population, median assets or family income, income inequality, average time served before release in prisons. On the other had, the number of crimes in a state in 1960 is decreased the more mean years of schooling 25+y.o. population has in the state and the more males there are per 100 females; surprisingly, unemployment rate of urban males (both age groups 14-24 and 35-39) also decreases Crime - the more unemployed, the less crime there is, and the crime is also lower, the higher the probability of imprisonment is.
+
+If at the initial split we have a state with a value of police expenditure in 1960 higher than 7.65, then follow the second (right) leaf. Here, based on linear regression, we can see that crime amount is increased the more males aged 14-24 there are in the state, the fact that the state is southern also increases number of crimes, as well as mean years of schooling for 25+y.o. citizens. Bigger police expenditure also signalizes that there is more crime, as well as male participation in labour force, bigger amount of males per females, bigger population, larger share of non-whites in population, larger unemployment rate, inequality and time served in prisons, while more wealth and more probability of imprisonment is related to a lower amount of crime. 
+
+This is not a prescriptive model, so we wouldn't be able to make a conclusion of what should have been done back then to decrease crime. However, the tree helps us split states into two categories with slightly different effect of factors on the response, and we can also notice some logical relation, for example that more crime is associated with more inequality, more population and bigger police expenditures, as well as larger number of males and southern state. And there is a negative relationship  between the amount of crime and probability of imprisonment in both leaves. We cannot say that one factor causes another, since linear regression is not supposed to explain causality, but with the model we can see the type (positive/negative) of relation between predictors and response.
+
+# **Part 1.B Random Forest**
+
+Using the same data set, let's move to a Random Forest model.
+
+## **Step 1: Load the data**
+
+Same Crime data:
+
+```{r}
+head(data)
+```
+
+Here we can transform So to a factor, since it is a binary variable:
+
+```{r}
+# Since So is a binary variable, set it as factor for better model building
+data <- transform(data, So=as.factor(data[,2]))
+summary(data)
+```
+
+There is no median now for binary So now, so we can continue with the analysis.
+
+## **Step 2: Grow random trees**
+
+Let's start by growing a default RF with default setting and then improving it. 
+
+I will use the caret package, since it is more powerful and gives lots of options for tuning random forests.
+We will start with default parameters and then try to compare different tuning options to find the best model.
+Each time within the caret package we will **cross-validate the model** using LOOCV leave-one-out cross-validation (due to a small data set it will provide more realistic results than k-fold, as it gets more points for the training set).
+
+For each model we will make predictions using the built model (y-hat values), plot predictions against actual Crime values, calculate Residual Sum of the Squares SSres, Total Sum of the Squares SStotal, R squared, and then recalculate everything described above to compare the quality of the model with quality on training set.
+
+### Default RF model
+
+Let's start with basic settings. We use LOOCV for cross-validation, RMSE as a model metric, since we have a regression problem (for classifcation we would've ussed Accuracy). We set mtry, number of variables randomly used at each split, as a default value of 5, based on the formula p/3, where p is the number of predictors (15). We use this mtry value as our tune grid parameter for the model (setting which values the main parameter will take). 
+
+```{r}
+set.seed(1)
+ctrl <- trainControl(method='LOOCV')
+
+#RMSE quality metric since its a regression, not classification
+metric <- 'RMSE'
+
+#p/3 for regression models
+mtry <- (ncol(data)/3)
+
+tgrd <- expand.grid(.mtry=mtry)
+
+rf_basic <- train(Crime~.,
+                    data=data,
+                    method='rf',
+                    metric=metric,
+                    tuneGrid=tgrd,
+                    trControl=ctrl,
+                    #verbose to get more text description on the model
+                    verbose=T)
+
+print(rf_basic)
+
+rf_basic$finalModel
+
+varImp(rf_basic)
+```
+
+**Cross-validated Random Forest with 5 variables used at each split has an R2 of 45.5%, RMSE of 287 and MAE of 207; 40.96% of variance is is explained with the model**. This is a better result compared to regression trees, but we will still try to tune the random forest to improve them. As expected, the most important variable used is Po1 - police protection expenditure in 1960, just as in previous models, followed by expenditure in 1959, probability of imprisonment and wealth.
+
+Let's make some visualizations of predictions, residuals, variable importance:
+
+```{r}
+
+#Residual sum of squares:
+yhat_rf_basic <- rf_basic$pred[,1]
+ssres <- sum((yhat_rf_basic-data$Crime)^2)
+
+#Total sum of squares:
+sstot <- sum((data$Crime - mean(data$Crime))^2)
+
+#Plot predicted vs actual:
+plot(data$Crime, yhat_rf_basic, xlab='Actual Values', ylab='Predicted Values', main='Predicted vs Actual Crime Values, rf_basic')
+abline(0,1)
+
+#Plot residuals
+plot(data$Crime, scale(yhat_rf_basic - data$Crime), xlab='Actual Values', ylab='Standardized Residuals', main='Residuals, rf_basic')
+abline(0,0)
+
+#Plot Variable improtance
+vip::vip(rf_basic, num_features = 15)
+```
+
+As we can see, although many predictions and residuals are close to the actual values, some are quite far from the line, especially for the higher crime rates. As for importance, the top 5 predictors are police protection expenditures (both), probability of going to prison for a crime, wealth, non-whites share.
+
+Let's try different tuning options to see if we can improve the model
+
+### RF model with Random Search
+
+Here we are experimenting with the mtry parameter, number of variables randomly used at each split, but instead of setting it manually, we will let the model randomly choose its values
+
+
+```{r}
+set.seed(11)
+control <- trainControl(method='LOOCV', 
+                        search='random')
+
+#grow 500 trees
+ntree <- 500
+
+rf_randsearch <- train(Crime ~ .,
+                   data = data,
+                   method = 'rf',
+                   metric = metric,
+                   tuneLength  = 15, 
+                   trControl = control,
+                   verbose=T)
+print(rf_randsearch)
+
+rf_randsearch$finalModel
+
+varImp(rf_randsearch)
+
+```
+
+With several mtry values generated, the best model now appears to be **with mtry=3**. It has **R2 of 47% after LOO Cross-validation, MAE of 208 and explains 43% of variance (+3% to mtry=5 model).**
+
+Visualize the results:
+
+```{r}
+set.seed(1)
+#Residual sum of squares:
+yhat_rf_randsearch <- predict(rf_randsearch)
+ssres <- sum((yhat_rf_randsearch-data$Crime)^2)
+
+#plot the model
+plot(rf_randsearch)
+
+#Plot predicted vs actual:
+plot(data$Crime, yhat_rf_randsearch, xlab='Actual Values', ylab='Predicted Values', main='Predicted vs Actual Crime Values, rf_randsearch')
+abline(0,1)
+
+#Plot residuals
+plot(data$Crime, scale(yhat_rf_randsearch - data$Crime), xlab='Actual Values', ylab='Standardized Residuals', main='Residuals, rf_randsearch')
+abline(0,0)
+
+#Plot Variable improtance
+vip::vip(rf_randsearch, num_features = 15)
+```
+
+The first plot shows how with mtry=3 we get the lowest RMSE, and lower compared to mtry=5 as in our previous model. We can also see the improvement in the model on the plots - predictions are a lot closer to reality, and the range of residuals on the upper side has reduced by 1 stdev. The top 5 importance predictors are the same with the previous model, but now Po2 is the most important, not Po1, and the general importance of the first few predictors is a bit higher - for example, the 5th important predictor NW had a 45.7 overall importance in the default model, whereas now it is 50.6.
+
+This model could be chosen as the best one, but I will still do some more tuning to see if it can be better.
+
+### RF model with Grid Search
+
+In this model, instead of a random search (=choice of mtry), we will use a tune grid to try all the possible mtry values and see how model accuracy changes with increasing mtry:
+
+```{r}
+set.seed(1)
+control <- trainControl(method='LOOCV', 
+                        search='grid')
+
+tunegrid <- expand.grid(.mtry=(1:15))
+
+rf_grid <- train(Crime ~ .,
+                 data = data,
+                 method = 'rf',
+                 metric = metric,
+                 tuneGrid = tunegrid,
+                 verbose=T)
+print(rf_grid)
+
+rf_grid$finalModel
+
+varImp(rf_grid)
+```
+
+This time, the cross-validated model shows a better result once again, with **R2 of 51.6% achieved with mtry=4, with MAE of 211.8 and 43.7% of variance explained**. So far, this is the best model we've seen, and a 4% improvement in R2 is a good one, although it comes with a slight increase in MAE as well (211 instead of 208 with random search).
+
+Check the plots:
+
+```{r}
+set.seed(1)
+#Residual sum of squares:
+yhat_rf_grid <- predict(rf_grid)
+ssres <- sum((yhat_rf_grid-data$Crime)^2)
+
+#plot the model
+plot(rf_grid)
+
+#Plot predicted vs actual:
+plot(data$Crime, yhat_rf_grid, xlab='Actual Values', ylab='Predicted Values', main='Predicted vs Actual Crime Values, rf_randsearch')
+abline(0,1)
+
+#Plot residuals
+plot(data$Crime, scale(yhat_rf_grid - data$Crime), xlab='Actual Values', ylab='Standardized Residuals', main='Residuals, rf_randsearch')
+abline(0,0)
+
+#Plot Variable improtance
+vip::vip(rf_grid, num_features = 15)
+```
+
+On the plot of the grid search model we can see how the lowest RMSE is achieved with 3-7 used variable at each split, and the lowest error is with mtry=4. Predicted values and residuals show the same situation as random search model, where many values are close to the line, but the prediction for states with higher crime is less accurate. As for variable importance, the top-5 is again the same, and Po1 is the most important one, as in the same model. The difference we can notice is that the second half of predictors seems to have reduced importance compare to two previous model, so only top 4 predictors have importance of 50+%, the next 4 are withing 25-50%, and the last 7 have importance below 25%. So the prediction is mostly (50+%) made with trees using variables such as police protection expenditure, probability of imprisonment and wealth.
+
+### Bagged RF
+
+We will also try Bagging, which is a random forest model where mtry=15, all variables. This method considers all features when splitting the node and uses bootstrap replications. Bagging is powerful for variance reduction and overfitting prevention, so perhaps this model would perform well on our data set. I will use LOO cross-validation and 'treebag' method in caret:
+
+```{r}
+set.seed(1)
+ctrl <- trainControl(method='LOOCV')
+
+bag <- train(
+  Crime~.,
+  data=data,
+  method='treebag',
+  trControl=ctrl,
+  metric='RMSE', importance=T
+)
+print(bag)
+bag$finalModel
+varImp(bag)
+
+```
+
+Unfortunately baggind does not seem to go well with our data, as it provides R2 of 32% after cross-validation.
+
+```{r}
+#Residual sum of squares:
+yhat_bag <- bag$pred[,1]
+ssres <- sum((yhat_bag-data$Crime)^2)
+
+
+#Plot predicted vs actual:
+plot(data$Crime, yhat_bag, xlab='Actual Values', ylab='Predicted Values', main='Predicted vs Actual Crime Values, rf_randsearch')
+abline(0,1)
+
+#Plot residuals
+plot(data$Crime, scale(yhat_bag - data$Crime), xlab='Actual Values', ylab='Standardized Residuals', main='Residuals, rf_randsearch')
+abline(0,0)
+
+#Plot Variable improtance
+vip::vip(bag, num_features = 15)
+```
+
+From the plots we can tell that although the first 2 predictors are the same, the order of the following ones by importance is a bit different - for example wealth which was the 5th important one is replaced here with population. The predictions are far from being accurate, so  we will not use this model 
+
+### Choosing the final model
+
+Based on all the plots and metric we have analysed, the best model is the one with mtry=4 (4 random variables used at each split), which we got using the grid search parameter:
+
+```{r}
+rf_grid$results[4,]
+```
+
+**R2 for our model is 51.6%**, which is a better result compared to our previous models on the set. The model is also cross-validated using leave-one-out cross-validation, which helped us reduce overfitting .
+
+Now we can try and apply the random forest model on the two leaves we have from Part 1.A
+
+## **Step 3: Use chosen model on 2 leaves from Part 1.A**
+
+Now we can estimate model's quality on each leaf. I will use the split data set based on Po1 < 7.65 yes/no condition and calculate R2 that the model gives for each split.
+
+```{r}
+#split based on Po1
+leaves<-split(data, data$Po1<7.65)
+#df for each leaf
+#leaf 1 - TRUE vals from split
+df1<- as.data.frame(leaves[2])
+#leaf 2 - FALSE vals from split
+df2<- as.data.frame(leaves[1])
+  
+
+#yhat from the model for each leaf
+#leaf 1 prediction
+yhat1<-yhat_rf_grid[data$Po1<7.65]
+#leaf 2 prediction
+yhat2<-yhat_rf_grid[data$Po1>=7.65]
+
+#ssres and sstot for each leaf
+#leaf 1
+ssres1 <- sum((yhat1-df1[,16])^2)
+sstot1 <- sum((df1[,16]-mean(df1[,16]))^2)
+#leaf 2
+ssres2 <- sum((yhat2-df2[,16])^2)
+sstot2 <- sum((df2[,16]-mean(df2[,16]))^2)
+
+#R2 for each leaf
+#leaf 1
+r2_leaf1 <- 1 - ssres1/sstot1
+r2_leaf1
+#leaf 2
+r2_leaf2 <- 1 - ssres2/sstot2
+r2_leaf2
+
+```
+
+We can see that our cross-validated model performs well on both leaves with R2 values over 80%. The result is much better than with linear regression on each leaf, however we sacrifice explainability, since random forest cannot be explained easily with words.
+
+## **Step 4: Conclusion**
+
+Having compared different random forest models with different tuning parameters, we chose the model with 4 random variables being used at each split, as it showed the lowest Root-mean-square error RMSE and highest R-squared value. We made predictions using that model and saw on the graph that they have good accuracy, the only problem-causing points are states with high Crime rate - there aren't many of those, and considering that we only have 47 records in the set, this is acceptable. 
+
+Based on the variable importance, where the top 5 predictors are Po1 (police protection expenditure in 1960), Po2 (expenditure in 1959), Prob (probability of imprisonment), Wealth (household wealth), NW (share of non-whites in population), we can say that the highest increment in tree leaves' purity, meaning better quality of prediction and better quality of splits, is due to police protection expenditure variable, which is no surprise, since we saw this variable as the primary one for use in regression trees. Other features with high importance also improve the quality of the splits in the random forest model. So, for example, in our model better Crime predictions are made using first of all police protection expenditure values for the state, then probability of imprisonment (so high probability of punishment has strong relation with crime amount in a state), then wealth (so how much money household has in the state on average is also related to crime), and the amount of non-whites in population. In the future information on feature importance could be used for feature selection - perhaps randomly selecting variables for each split from a narrowed predictor set would result in higher accuracy.
+
+We also tried to fit the random forest model on each leaves and saw a good R2 value, suggesting that we might want to combine those methods and use random forest instead of regression on each of 2 leaves of regression tree, if we are willing to sacrifice explainability. After all, if we could see the coefficients for each variable in linear regression and the exact tree in regression tree, with Random Forest there is not much to explain visually or verbally, as we only know quality metrics and feature importance.
+
+
+# **10.2 Logistic Regression Example**
+
+I work in a food delivery company - we deliver from restaurants, supermarkets, pharmacies and many other shops. On of the possible uses of logistic regression for us would be in **predicting customer churn**. 
+
+**Data needed:** - we can use data describing user behaviour in the app, no extra survey would be necessary, as we always monitor these features.
+
+**Target feature** - whether the customer churned or not - a binary response variable (0/1, as in Yes/No)
+
+**Predictors**:
+
+- Number of days the user has been on the app (tenure)
+
+- Whether the customer is a subscriber or not. We have a ~$4 monthly 'Premium' subscription, with which users can get special deals only for premium customers and have a fixed, lower than average delivery fee (so that lunch hour surge would not affect delivery cost for them). This is a binary variable
+
+- Delivery zone, where the customer is located. Customers can set their address in the app, which falls into one of our delivery zones, and defines what restaurants/shops they will see as available. This is a categorical variable, since it is an identifier of a zone.
+
+- Share of orders the customer has reviewed. After each order there is a chance to review the order, and some customers can be more involved in this process than others.
+
+- Gender, which customers also specify in the app
+
+There are other interesting predictors that we can use. For example, if we take order reviews, there are several categories a customer can rate - how satisfied they are with delivery time, order packaging, delivery person politeness, app navigation, etc. Average of each of these averages for a customer can be also used as predictors (for example, we can check a theory whether those with lower average review features on the last few orders are likely to churn).
+
+The app has about 10 millions of users in total, and about 5 million are active in a 3-month period, each making about 6 orders throughout 3 months. So, there would be lots of user data which can be used for the model (of course, some NA values will require treatment).
+
+# **Part 2.A Logistic Regression **
+
+## **Step 1: Load the data**
+
+```{r}
+data <- read.table("germancredit.txt", 
+                   header = FALSE, 
+                   stringsAsFactors = FALSE,
+                   sep = "", 
+                   dec = ".")
+head(data)
+```
+
+Before exploring the data, I will transform all the attributes based on description - set numeric variables as numeric, categorical as factors. Also, since column names don't exist, I will try to rename them according to data description
+
+Also, the response variable has values of 1 and 2, but we need 0 and 1 for the regression, so I will also convert the variables of Credit_Risk (V21) category:
+
+```{r}
+#1 and 2 in last column to 0 and 1
+data$V21[data$V21==1] <- 0
+data$V21[data$V21==2] <- 1
+
+data <- transform(data,
+                  V1=as.factor(data$V1),
+                  V2=as.integer(data$V2),
+                  V3=as.factor(data$V3),
+                  V4=as.factor(data$V4),
+                  V5=as.integer(data$V5),
+                  V6=as.factor(data$V6),
+                  V7=as.factor(data$V7),
+                  V8=as.integer(data$V8),
+                  V9=as.factor(data$V9),
+                  V10=as.factor(data$V10),
+                  V11=as.integer(data$V11),
+                  V12=as.factor(data$V12),
+                  V13=as.integer(data$V13),
+                  V14=as.factor(data$V14),
+                  V15=as.factor(data$V15),
+                  V16=as.integer(data$V16),
+                  V17=as.factor(data$V17),
+                  V18=as.integer(data$V18),
+                  V19=as.factor(data$V19),
+                  V20=as.factor(data$V20),
+                  #response is a factor! 0-good risk 1-bad
+                  V21=as.factor(data$V21))
+                 
+colnames(data) <- c('Checking_Account', 'Duration_months', 'Credit_History', 'Credit_Purpose', 'Credit_Amount', 'Savings', 'Employment_Present','Installment_to_Income', 'Status_and_Sex', 'Debtors_Guarantors', 'Residence_Since', 'Property', 'Age', 'Other_Installments', 'Housing', 'Existing_Credits_at_Bank', 'Job', 'People_Liable', 'Telephone', 'Foreign_Worker', 'Credit_Risk')
+summary(data)
+
+dim(data)
+```
+
+This looks much better. Now we can explore the data.
+
+## **Step 2: Data Exploration**
+
+First, check if there are NA values in the set:
+
+```{r}
+is.null(data)
+```
+
+No N/As.
+
+Next, I'll plot all the variables. First, I plot barcharts for all the categorical variables:
+
+```{r}
+p1=ggplot(data, aes(x=Checking_Account))+geom_bar()+theme_stata()
+p2=ggplot(data, aes(x=Credit_History))+geom_bar()+theme_stata()
+p3=ggplot(data, aes(x=Credit_Purpose))+geom_bar()+theme_stata()
+p4=ggplot(data, aes(x=Savings))+geom_bar()+theme_stata()
+p5=ggplot(data, aes(x=Employment_Present))+geom_bar()+theme_stata()
+p6=ggplot(data, aes(x=Status_and_Sex))+geom_bar()+theme_stata()
+p7=ggplot(data, aes(x=Debtors_Guarantors))+geom_bar()+theme_stata()
+p8=ggplot(data, aes(x=Property))+geom_bar()+theme_stata()
+p9=ggplot(data, aes(x=Other_Installments))+geom_bar()+theme_stata()
+p10=ggplot(data, aes(x=Housing))+geom_bar()+theme_stata()
+p11=ggplot(data, aes(x=Job))+geom_bar()+theme_stata()
+p12=ggplot(data, aes(x=Telephone))+geom_bar()+theme_stata()
+p13=ggplot(data, aes(x=Foreign_Worker))+geom_bar()+theme_stata()
+p14=ggplot(data, aes(x=Credit_Risk))+geom_bar()+theme_stata()
+
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14)
+```
+
+Take a closer look at response variable - Credit Risk: there is imbalance in responses towards 0 - Good risks (70%).
+
+```{r}
+t<-table(data$Credit_Risk)
+t
+round(t[1]/(t[1]+t[2])*100,2)
+round(t[2]/(t[1]+t[2])*100,2)
+```
+
+There are more than twice as many 'good' applicants in terms of credit risk.
+
+Next, let's check histogram plots for numeric variables:
+
+```{r}
+melted <- melt(data)[,15:16]
+hist_plots <- ggplot(melted,
+                    aes(x=value))+
+              geom_histogram(aes(y=..density..), colour="black", fill="white")+
+              geom_density(alpha=.3, color="skyblue", fill="skyblue")+
+              facet_wrap(~variable, scale="free")+
+              theme_fivethirtyeight()
+hist_plots
+```
+
+Here, we can see that most variables are right-skewed. Duration of credit is usually under 40 months, it's amount is mostly under ~7000, and installment rates are more often as high as 4% of income; credit applicants are on the younger side by age, most of them are under 50 (working age?). Most people tend to have ~1-2 credits at bank, so 3-4 are more rare, and most of them also have ~1 dependent, less often 2.
+
+## **Step 3: Split data into train/test sets**
+
+To train our model on one set and validate on a different one, I will split the data into training and test sets with 70/30 ratio:
+
+
+```{r}
+set.seed(1)
+
+#split
+data_split <- initial_split(data, prop = .7, strata = "Credit_Risk")
+data_train <- training(data_split)
+data_test  <- testing(data_split)
+
+#check proportions
+t_train <- table(data_train$Credit_Risk)
+round(t_train[1]/(t_train[1]+t_train[2])*100,2)
+round(t_train[2]/(t_train[1]+t_train[2])*100,2)
+
+t_test <- table(data_test$Credit_Risk)
+round(t_test[1]/(t_test[1]+t_test[2])*100,2)
+round(t_test[2]/(t_test[1]+t_test[2])*100,2)
+```
+
+
+The share of response variable withing the split is very close to the initial set, so we keep this split.
+
+
+## **Step 4: Logistic Regression with all predictors**
+
+### Confusion Matrix
+
+To start, I will build logistic Regression on the training set using all the predictions. I will be using the caret package to also perform repeated cross-validation on the model with standard 10 folds and 10 repeats:
+
+```{r}
+set.seed(1)
+
+logreg1 <- train(Credit_Risk~.,
+                   data=data_train,
+                   method='glm',
+                 #use logit since we have 0/1 as response - natural log link
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(logreg1)
+logreg1$results
+
+```
+
+As we can see, not all the factors are significant. **Accuracy for the model with all factors is 74.6% and Kappa is 36.3%**. Kappa shows the prediction performance of variables - the bigger Kappa is, the more agreement there is between agreement. Our Kappa here falls into 'fair' agreement category. Accuracy standard deviation is 4.5%, which is not a bad value. **AIC is 717.41**, let's remember this value to see if it gets lower for the following models - this is a relative measure of model fit, and its lower value suggests that the model is better than the one with a higher AIC.
+
+### Multicollinearity Check
+
+We can go ahead and leave only significant predictors in the model. However, I would also like to check the model for multicollinearity using the VIF values - variance inflation factor. It measure the effect which multicollinearity has on the model, and VIF >10 means that we have a serious multicollinearity problem. Sometimes high VIF value of one predictor causes other vifs to rise, and removing this variable might help make model's performance better. So I would like to try removing one of the highest VIF variables and checking how the model would change:
+
+```{r}
+par(mar = c(3,8,3,3))
+vif1<-car::vif(logreg1$finalModel)
+as.table(vif1)
+
+barplot(vif1,
+        main="VIF Values (model with all parameters)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2,
+        cex.names=0.3,
+        )
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+From VIF, it seems like all the categories of Job have very high VIFs, including the highest one over 12. In the model, no categories of Job are significant their p values are at 0.36, 0.43, and even 0.99. Perhaps, if we remove this variable, the model will improve and we will have more significant variables and smaller VIFs?
+
+## **Step 5: Logistic Regression without 'Job' (based on VIF)**
+
+Let's repeat logistic regression without Job and compare results:
+
+```{r}
+set.seed(1)
+
+logreg2 <- train(Credit_Risk~. -Job,
+                   data=data_train,
+                   method='glm',
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(logreg2)
+logreg2$results
+```
+
+We get a slightly higher accuracy and Kappa, but the improvement is not significant. And still not all coefficients are significant, so it is unlikely that further removal of predictors based on VIF one-by-one would make all other variables significant. We can therefore move on and use significant variables only. AIC is 713, a bit lower than AIC of the all-factor model, so we are on the right way with removing insignificant variables.
+
+## **Step 6: Logistic Regression with significant predictors only (keeping full category sets)**
+
+### Logistic Regression
+
+As with linear regression, our next step to improve the model is to only leave significant variables in the model.
+
+We saw that for our categorical variables nor all categories were significant for the model. However, we will not remove specifica categories just yet - let's keep categorical variables if at least 1 category was found significant.
+
+With this condition, we are getting rid of: Residence_Since, Housing, Existing_Credits_at_Bank, Job
+
+```{r}
+set.seed(1)
+
+logreg3 <- train(Credit_Risk~. - Residence_Since - Housing - Existing_Credits_at_Bank - Job,
+                   data=data_train,
+                   method='glm',
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(logreg3)
+logreg3$results
+```
+
+After exclusion of some predictors, the Accuracy has slightly improved compared to model with all factors, by less than 0.1% to **74.7%**, and Kappa is almost the same. AIC = 710.6, lower than the previous 2 models, so this model has a better fit.
+
+It is important to notice that this time we have one insignificant category - Property. And other categories have significant values.
+Let's try and remove Property - maybe other significant predictors will appear:
+
+```{r} 
+set.seed(1)
+
+logreg4 <- train(Credit_Risk~. - Residence_Since - Housing - Existing_Credits_at_Bank - Job - Property,
+                   data=data_train,
+                   method='glm',
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(logreg4)
+logreg4$results
+```
+
+The Accuracy has improved to 74.8%, and Kappa to 36.6%, however now Status and sex is not significant - we remove it:
+
+```{r}
+set.seed(1)
+
+logreg5 <- train(Credit_Risk~. - Residence_Since - Housing - Existing_Credits_at_Bank - Job - Property - Status_and_Sex,
+                   data=data_train,
+                   method='glm',
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(logreg5)
+logreg5$results
+```
+
+Metrics are not improving, but we have another insignificant parameter - People_liable. Redo the model again:
+
+```{r}
+set.seed(1)
+
+logreg6 <- train(Credit_Risk~. - Residence_Since - Housing - Existing_Credits_at_Bank - Job - Property - Status_and_Sex - People_Liable,
+                   data=data_train,
+                   method='glm',
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(logreg6)
+logreg6$results
+```
+
+The model is not improving, and we once again get 21 significant variables - so let's keep only them for the new model
+
+## **Step 7: Logistic Regression with significant values only**
+
+This time, we will build logistic regression using only significant variables without keeping full category sets - so if only a few categories from one predictor are significant, we will keep those values only.
+
+### Creating binary variables from significant predictors
+
+Since we do not need all the categories of each predictor, we can create new binary data columns for each of the significant variables. We will add values of '1' for rows that contain this significant value and 0 for rows that do not
+
+```{r}
+#Checking Account A13, A14
+data_train$Checking_AccountA13[data_train$Checking_Account == 'A13'] <-1
+data_train$Checking_AccountA13[data_train$Checking_Account != 'A13'] <-0
+data_train$Checking_AccountA14[data_train$Checking_Account == 'A14'] <-1
+data_train$Checking_AccountA14[data_train$Checking_Account != 'A14'] <-0
+
+#Credit History A32, A33, A34
+data_train$Credit_HistoryA32[data_train$Credit_History == 'A32'] <-1
+data_train$Credit_HistoryA32[data_train$Credit_History != 'A32'] <-0
+data_train$Credit_HistoryA33[data_train$Credit_History == 'A33'] <-1
+data_train$Credit_HistoryA33[data_train$Credit_History != 'A33'] <-0
+data_train$Credit_HistoryA34[data_train$Credit_History == 'A34'] <-1
+data_train$Credit_HistoryA34[data_train$Credit_History != 'A34'] <-0
+
+#Credit Purpose A41, A42, A43, A49
+data_train$Credit_PurposeA41[data_train$Credit_Purpose == 'A41'] <-1
+data_train$Credit_PurposeA41[data_train$Credit_Purpose != 'A41'] <-0
+data_train$Credit_PurposeA42[data_train$Credit_Purpose == 'A42'] <-1
+data_train$Credit_PurposeA42[data_train$Credit_Purpose != 'A42'] <-0
+data_train$Credit_PurposeA43[data_train$Credit_Purpose == 'A43'] <-1
+data_train$Credit_PurposeA43[data_train$Credit_Purpose != 'A43'] <-0
+data_train$Credit_PurposeA49[data_train$Credit_Purpose == 'A49'] <-1
+data_train$Credit_PurposeA49[data_train$Credit_Purpose != 'A49'] <-0
+
+#Savings A64, A65
+data_train$SavingsA64[data_train$Savings == 'A64'] <-1
+data_train$SavingsA64[data_train$Savings != 'A64'] <-0
+data_train$SavingsA65[data_train$Savings == 'A65'] <-1
+data_train$SavingsA65[data_train$Savings != 'A65'] <-0
+
+#Employment A74
+data_train$Employment_PresentA74[data_train$Employment_Present == 'A74'] <-1
+data_train$Employment_PresentA74[data_train$Employment_Present != 'A74'] <-0
+
+#Debtors_Guarantors A103
+data_train$Debtors_GuarantorsA103[data_train$Debtors_Guarantors == 'A103'] <-1
+data_train$Debtors_GuarantorsA103[data_train$Debtors_Guarantors != 'A103'] <-0
+
+#Other Installments A143
+data_train$Other_InstallmentsA143[data_train$Other_Installments == 'A143'] <-1
+data_train$Other_InstallmentsA143[data_train$Other_Installments != 'A143'] <-0
+
+#Telephone A192
+data_train$TelephoneA192[data_train$Telephone == 'A192'] <-1
+data_train$TelephoneA192[data_train$Telephone != 'A192'] <-0
+
+#Foreign_Worker A202
+data_train$Foreign_WorkerA202[data_train$Foreign_Worker == 'A202'] <-1
+data_train$Foreign_WorkerA202[data_train$Foreign_Worker != 'A202'] <-0
+
+
+```
+
+### Logistic Regression
+
+Using significant variables, build a new model:
+
+```{r}
+set.seed(1)
+
+final <- train(Credit_Risk~ Checking_AccountA13 + Checking_AccountA14 + Duration_months + Credit_HistoryA32 + Credit_HistoryA33 + Credit_HistoryA34 +  Credit_PurposeA41 + Credit_PurposeA42 + Credit_PurposeA43 +Credit_PurposeA49 + Credit_Amount + SavingsA64 + SavingsA65 + Employment_PresentA74 + Installment_to_Income + Debtors_GuarantorsA103 + Age + Other_InstallmentsA143 + TelephoneA192 + Foreign_WorkerA202,
+                   data=data_train,
+                   method='glm',
+                   family=binomial(link = "logit"),
+                   trControl = trainControl(method='repeatedcv', number=10, repeats=10))
+                  
+summary(final)
+final$results
+
+```
+
+Now, after training and cross-validating the model using only significant values, we have **75.98% Accuracy and AIC of 697.5, which is lower than what we had before, meaning that this model a better fit**. Kappa also increased to **38.5**, showing that our final model makes better predictions. 
+
+### Multicollinearity
+
+Before making a prediction on the test set, let's check VIF values. We remember than we had issues with multicollinearity before, and several predictors exceeded VIF of 5, which meant we could suspect multicollinearity.
+
+```{r}
+par(mar = c(3,8,3,3))
+vif<-car::vif(final$finalModel)
+as.table(vif)
+
+barplot(vif,
+        main="VIF Values (model with significant parameters)",
+        horiz=TRUE,
+        col="lightblue",
+        las=2,
+        cex.names=0.7,
+        )
+abline(v=5, lwd=3, lty=2, col="orange")
+abline(v=10, lwd=3, lty=2, col="darkred")
+```
+
+As we can see, this time all values are lower than 3, so we have no issues with multicollinearity and our model is good.
+
+### Testing the final model
+
+Our final model should now be tested on the test set. 
+
+Before validating, we need to add the new value columns to our test set, same as we did with training:
+
+```{r}
+#Checking Account A13, A14
+data_test$Checking_AccountA13[data_test$Checking_Account == 'A13'] <-1
+data_test$Checking_AccountA13[data_test$Checking_Account != 'A13'] <-0
+data_test$Checking_AccountA14[data_test$Checking_Account == 'A14'] <-1
+data_test$Checking_AccountA14[data_test$Checking_Account != 'A14'] <-0
+
+#Credit History A32, A33, A34
+data_test$Credit_HistoryA32[data_test$Credit_History == 'A32'] <-1
+data_test$Credit_HistoryA32[data_test$Credit_History != 'A32'] <-0
+data_test$Credit_HistoryA33[data_test$Credit_History == 'A33'] <-1
+data_test$Credit_HistoryA33[data_test$Credit_History != 'A33'] <-0
+data_test$Credit_HistoryA34[data_test$Credit_History == 'A34'] <-1
+data_test$Credit_HistoryA34[data_test$Credit_History != 'A34'] <-0
+
+#Credit Purpose A41, A42, A43, A49
+data_test$Credit_PurposeA41[data_test$Credit_Purpose == 'A41'] <-1
+data_test$Credit_PurposeA41[data_test$Credit_Purpose != 'A41'] <-0
+data_test$Credit_PurposeA42[data_test$Credit_Purpose == 'A42'] <-1
+data_test$Credit_PurposeA42[data_test$Credit_Purpose != 'A42'] <-0
+data_test$Credit_PurposeA43[data_test$Credit_Purpose == 'A43'] <-1
+data_test$Credit_PurposeA43[data_test$Credit_Purpose != 'A43'] <-0
+data_test$Credit_PurposeA49[data_test$Credit_Purpose == 'A49'] <-1
+data_test$Credit_PurposeA49[data_test$Credit_Purpose != 'A49'] <-0
+
+#Savings A64, A65
+data_test$SavingsA64[data_test$Savings == 'A64'] <-1
+data_test$SavingsA64[data_test$Savings != 'A64'] <-0
+data_test$SavingsA65[data_test$Savings == 'A65'] <-1
+data_test$SavingsA65[data_test$Savings != 'A65'] <-0
+
+#Employment A74
+data_test$Employment_PresentA74[data_test$Employment_Present == 'A74'] <-1
+data_test$Employment_PresentA74[data_test$Employment_Present != 'A74'] <-0
+
+#Debtors_Guarantors A103
+data_test$Debtors_GuarantorsA103[data_test$Debtors_Guarantors == 'A103'] <-1
+data_test$Debtors_GuarantorsA103[data_test$Debtors_Guarantors != 'A103'] <-0
+
+#Other Installments A143
+data_test$Other_InstallmentsA143[data_test$Other_Installments == 'A143'] <-1
+data_test$Other_InstallmentsA143[data_test$Other_Installments != 'A143'] <-0
+
+#Telephone A192
+data_test$TelephoneA192[data_test$Telephone == 'A192'] <-1
+data_test$TelephoneA192[data_test$Telephone != 'A192'] <-0
+
+#Foreign_Worker A202
+data_test$Foreign_WorkerA202[data_test$Foreign_Worker == 'A202'] <-1
+data_test$Foreign_WorkerA202[data_test$Foreign_Worker != 'A202'] <-0
+```
+
+Now we can make a prediction - round with a 0.5 threshold for now:
+
+```{r}
+set.seed(1)
+
+prediction <- predict(final, newdata=data_test, type='prob')
+
+
+prediction_round <- factor(as.integer(prediction[,2]>0.5))
+prediction_round
+
+```
+
+
+### Assessing Quality - Confusion Matrix
+
+As another measure of quality, let's check the confusion matrix
+
+We first predict probabilities of data points being in group 0 or group 1 - we get a data set with two columns (0 and 1) and probability of data point being in each.
+
+We can round those values. **For now, let's use a threshold of 0.5** - we will try others in part 2. Values higher or equal to 0.5 will be categorizes as 1: 
+
+```{r}
+set.seed(1)
+cm <- confusionMatrix(
+  data = prediction_round, 
+  reference = relevel(data_test$Credit_Risk, ref = "0")
+)
+cm
+
+```
+
+'No Information Rate' in the output means that we have a ratio of 0/1 attributes in training set - so if we predicted '0' for each data point, we would still have an accuracy of 70%. Therefore, **a good model would have an accuracy that exceeds this value**. 
+
+Our cross validated model performs on the test set with a **77.1%** accuracy based on confusion matrix (the function calculates it as (TP+TN)/(TP+TN+FN+FP)), which is a good accuracy thanks to cross-validation and two sets (we minimized overfitting)
+
+**Our model has sensitivity of 85.8% and specificity of 56.7%**
+
+**Misclassification error is 22.9%**:
+
+```{r}
+#misclassification error
+round((cm$table[1,2]+cm$table[2,1])/sum(cm$table)*100,2)
+```
+
+AS expected, the accuracy on test set is slightly lower than on training set due to less overfitting and fewer random patterns, but it is still a good result. Let's keep exploring other quality parameters of the model.
+
+### Assessing Quality - ROC Curve
+
+Let's plot ROC curve for our prediction.
+
+First, we build a plot using probabilities to compare true positive and true negative values - the result looks good:
+
+```{r}
+library(ROCR)
+
+# predicted probabilities
+
+prob_final <- predict(final, data_test, type = "prob")[,2]
+
+# AUC metrics
+perffinal <- prediction(prob_final, data_test$Credit_Risk) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+# ROC curve
+plot(perffinal, col = "blue", main='ROC TP/FP', lwd=2)
+abline(0,1)
+
+
+```
+
+Next, let's plot ROC with rounded values - we can see that aur Area Under the Curve is 71.2%, and our confidence intervals with alpha of 0.9 are 65.6-76.9%. **This is the ability of our model to put data points into Good/Bad credit risk categories**. By rule of thumb AUC of 0.5 is a bad classifier, and the higher above that AUC is, the better - this value is not excellent or outstanding as AUC >0.8 or 0.9 would be, but we can say that it is 'good' and beeter than just 'acceptable'.
+
+
+```{r}
+library(pROC)
+
+roccurve <- roc(response=data_test$Credit_Risk,predictor=as.integer(prediction[,2]>0.5),
+                levels = c(0, 1), 
+                direction = "<",
+                ci=TRUE, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid=TRUE,
+                print.auc=TRUE, show.thres=TRUE)
+                
+sens.ci <- ci.se(roccurve)
+plot(sens.ci, type="shape", col="lightblue")                
+plot(sens.ci, type="bars")               
+
+```
+
+## **Step 8: Showing the final model**
+
+Having run 7 iterations of cross-validated logistic regression model, we found the best one with **lowest AIC among other models we've built of 697**, suggesting that this model fits the data better than others, and **Accuracy of 77.1% on test data (calculated with confusion matrix) using threshold of 0.5**. We cross-validated model using repeated cross-validation with 10 folds and 10 repeats, so considering that we have a good size of both training and validation sets (700/300), random patterns (overfitting) should be minimized, and we can trust the Accuracy we got. 
+
+Let's show the coefficients of the final model - remember that we renamed the columns to get more understanding of what's inside, so I will name all the categories we use as variables as well:
+
+| **Variable (Initial Name)**	| **Value**	|	**Description**	|	**Coefficient**|
+| ------- | ------- | ------- | ------- |
+| Intercept	|  - 	|		- 	|  -  	|	0.7958850 |
+| Checking_Account (V1)	|	Checking_AccountA13	|	>= 200 DM / salary assignments for at least 1 year	|	-0.8423551  |
+| Checking_Account (V1)	|	Checking_AccountA14	|	no checking account	|	-1.5693549 | 
+| Duration_Months (V2)	|	Duration_months	|	Duration of credit	|	0.0318988  |
+| Credit_History (V3)	|	Credit_HistoryA32	|	existing credits paid back duly till now	|	-0.6010404 | 
+| Credit_History (V3)	|	Credit_HistoryA33	|	delay in paying off in the past	|	-0.9294740  |
+| Credit_History (V3)	|	Credit_HistoryA34	|	A34 : critical account/ other credits existing (not at this bank)	|	-1.2685477  |
+| Credit_Purpose (V4)	|	Credit_PurposeA41	|	car (used)	|	-1.5377085  |
+| Credit_Purpose (V4)	|	Credit_PurposeA42	|	furniture/equipment	|	-0.7161428  |
+| Credit_Purpose (V4)	|	Credit_PurposeA43	|	radio/television	|	-0.9114103  |
+| Credit_Purpose (V4)	|	Credit_PurposeA49	|	business	|	-0.8768048  |
+| Credit_Amount (V5)	|	Credit_Amount	|	Amount of credit	|	0.0001241  |
+| Savings (V6)	|	SavingsA64	|	>= 1000 DM	|	-1.3350442 | 
+| Savings (V6)	|	SavingsA65	|	unknown/ no savings account	|	-0.7515197  |
+| Employment_Present (V7)	|  	Employment_PresentA74	|  	Present employment since 4 <= ... < 7 years	|	-0.6940545  |
+| Installment_to_Income (V8)	|	Installment_to_Income	|	Installment rate in percentage of disposable income	|	0.3251178  |
+| Debtors_Guarantors (V10)	|	Debtors_GuarantorsA103	|	guarantor	|	-0.9146153  |
+| Age (V13)	|	Age	|	Age in years	|	-0.0184810|  
+| Other_Installments (V14)	|	Other_InstallmentsA143	|	None	|	-0.8647828  |
+| Telephone (V19)	|	TelephoneA192	|	yes, registered under the customers name	|	-0.4449015 |
+| Foreign_Worker (V20)	|	Foreign_WorkerA202	|	no	|	-1.4422695  
+
+
+## **(Extra) Step 9: Test other thresholds**
+
+Let's check how accuracy and AUC would change if we use other thresholds. I will use values from 0 to 1 with a 0.01 step
+
+```{r}
+auc <- list()
+acc <- list()
+thresh <- seq(0,1, by=0.01)
+for (i in thresh){
+  acci=confusionMatrix(data = factor(as.integer(prediction[,2]>i)), 
+                        reference = relevel(data_test$Credit_Risk, ref = "0"))$overall[1]
+  auci=roc(response=data_test$Credit_Risk,predictor=as.integer(prediction[,2]>i),
+           levels = c(0, 1),
+           direction = "<")$auc  
+  acc<-append(acc,as.numeric(acci))
+  auc<-append(auc,as.numeric(auci))
+}
+
+thresholds<-data.frame(unlist(thresh), round(unlist(auc),2), round(unlist(acc),2))
+colnames(thresholds)<-c('Threshold', 'AUC', 'Accuracy')
+head(thresholds)
+```
+
+Visualize the results:
+
+```{r}
+colors<-c('AUC'='steelblue', 'Accuracy'='darkgreen')
+ggplot(thresholds, aes(x=Threshold))+
+  geom_line(aes(y=AUC, color='AUC'), size=1.2)+
+  geom_line(aes(y=Accuracy, color='Accuracy'), size=1.2)+
+  scale_color_manual(values=colors)
+```
+
+As we can see, the compromise where AUC value 'meets' Accuracy is at **threshold of 0.33**. After that, AUC starts to fall, and Accuracy increases. 
+
+So our threshold choice would depend on our goal:
+
+The **'golden mean'**, where AUC and Accuracy meet each other is threshold **0.33 and 0.35**:
+
+```{r}
+thresholds[thresholds$AUC==thresholds$Accuracy,]
+```
+
+If maximizing **AUC** is the priority - **threshold 0.17-0.20** is best:
+
+```{r}
+thresholds[thresholds$AUC==max(thresholds$AUC),]
+```
+
+If maximizing **Accuracy** is the priority - **threshold 0.48 - 0.56** is best:
+
+```{r}
+thresholds[thresholds$Accuracy==max(thresholds$Accuracy),]
+
+```
+
+But what if we take cost into consideration? Let's check in the next section
+
+# **Part 2.B Threshold with Cost **
+
+Now we know that incorrectly identifying a customer with bad risk as a good one (0), False Positive, is 5 times more expensive than misclassifying a good risk customer as a bad one , False Negative.
+
+We can calculate loss for each of the thresholds.
+
+## **Step 10: Calculate Loss**
+
+Knowing the cost, we build confusion matrix and count each False Positive as 5 False Negatives:
+
+```{r}
+losses<-list()
+thresh <- seq(0,1, by=0.01)
+for (i in thresh){
+  confm = confusionMatrix(data = factor(as.integer(prediction[,2]>i)), 
+                        reference = relevel(data_test$Credit_Risk, ref = "0"))
+  losses <- append(losses, confm$table[1,2]*5+confm$table[2,1])
+}
+
+losses <- data.frame(unlist(thresh), unlist(losses))
+colnames(losses) <- c('Threshold', 'Loss')
+head(losses)
+```
+
+
+## **Step 11: Find best threshold**
+
+Now we know the losses for each of our thresholds. Let's visualize the result:
+
+```{r}
+ggplot(losses, aes(x=Threshold, y=Loss))+
+  geom_point(color='skyblue', size=2)+
+  geom_point(data= losses[losses$Loss==min(losses$Loss),], color='darkgreen', size=3)+
+  geom_point(data= losses[losses$Loss==max(losses$Loss),], color='red', size=3)+
+  labs(title='Loss - Threshold')+
+  theme_stata()
+```
+
+As we can see, **to minimize loss, we should keep the threshold at about 15-19%**, with **minimal loss of 116 achieved at 0.17 threshold**:
+
+```{r}
+losses[losses$Loss==min(losses$Loss),]
+```
+
+So, with the given cost of one false positive equal to 5 false negatives, we should use **threshold of 0.17**, which will give us **AUC of 76% an Accuracy of 69%**. So in this case, we are sacrificing the accuracy to avoid costly false positives, but we get a 'good' AUC, or degree of separability, of 0.76:
+
+```{r}
+thresholds[thresholds$Threshold==0.17,]
+```
+
