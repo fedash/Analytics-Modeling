@@ -1,0 +1,857 @@
+---
+title: "Advanced Regression Models for Crime Data"
+author: "Alena Fedash"
+always_allow_html: true
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+date: "2022-10-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Please find below my step-by-step solution in R with explanations and comments for each step.**
+
+# **1. Stepwise Regression**
+
+## **Step 0: Load the libraries**
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(qcc)
+library(mctest)
+library(ppcor)
+library(car)
+library(psych)
+library(ggthemes)
+library(corrplot)
+library(DAAG)
+library(GGally)
+library(caret)
+library(psych)
+library(ggpubr)
+library(rsample)
+library(glmnet)
+```
+
+## **Step 1: Load the dataset**
+
+```{r}
+
+data <- read.table("uscrime.txt", 
+                   header = TRUE, 
+                   stringsAsFactors = FALSE,
+                   sep = "", 
+                   dec = ".")
+head(data)
+
+```
+
+## **Step 2: Basic Explorations**
+
+CHeck short summary for each variable to refer to later:
+
+```{r}
+describe.by(data)
+```
+
+As we can see, predictors have very different scales - so we should scale for each of our analysis steps to avoid uneven effect due to the range of values in some parameters.
+
+Visualize distribution of values in parameters:
+
+```{r}
+#melt data for easier visualization
+melted<-melt(data)
+#boxplots
+box_plots <- ggplot(melted,
+                    aes(x=factor(variable), y=value))+
+              geom_boxplot(alpha=.5, fill="skyblue")+
+              facet_wrap(~variable, ncol=8, scale="free")+
+              theme_fivethirtyeight()
+
+    
+box_plots
+#distribution plots with density
+hist_plots <- ggplot(melted,
+                    aes(x=value))+
+              geom_histogram(aes(y=..density..), colour="black", fill="white")+
+              geom_density(alpha=.3, color="skyblue", fill="skyblue")+
+              facet_wrap(~variable, scale="free")+
+              theme_fivethirtyeight()
+hist_plots
+```
+
+A lot of right-skewed parameters. 'So' variable is binary (southern state or not).
+
+Check pairwise correlation - visualize correlation of variables in combination with p-values (to check for significant correlations):
+
+```{r}
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(data[,-16])
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(data)
+corrplot(cor(data[,-16]), 
+         method='pie', 
+         type="upper", 
+         #order="hclust",
+         p.mat = p.mat, 
+         sig.level = 0.1,
+         insig = "blank")
+```
+
+As we see now and as we have seen in previous explorations, we do have some multicollinearity in the data. So, the first method that we're going to try, stepwise regression, coulf help us resolve it. However, multicollinearity could also cause some problems - for instance, if some correlated parameters have a similar contribution to the model fit, we might miss both of them in case they are not as significant individually. On the other hand, stepwise regression is a good technique for initial exploration of the variable effects on model's prediction.
+
+Let's start with stepwise regression and see how it will deal with correlated parameters.
+
+## **Step 3: Scaling the Data**
+
+Since the ranges of predictors are very different, we will scale them and add into a new data frame with unscaled response. Since 'So' is binary, we scale everything except it and the respone, and then join all columns together:
+
+```{r}
+#scale except So (column 2) and Crime (response)
+scaled <- as.data.frame(scale(data[,-c(2,16)]))
+#add So and response back
+scaled <- cbind(So=data[,2], scaled, Crime=data[,16])
+head(scaled)
+```
+
+## **Step 4: Stepwise Regression on scaled data**
+
+Let's start by performing stepwise regression using the scaled data and all variables. I will use the caret package to combine this method with repeated cross-validation (5 folds since we only have 47 data points and 10 repeats to minimize random effects).
+
+### **4.1: Choosing between forward and backward stepwise regression**
+
+**Should we use backward or forward stepwise regression?**
+
+I decided to go for backward stepwise regression for several reasons. First of all, we do not have an extreme case when the number of predictors is larger than the amount of data points (in such cases, forward regression is normally used). Also, backward has an advantage of starting with the full model instead of a null one - from the start, it simultaneously considers the effects of all variables, which is especially good for high collinearity cases like ours (as we saw on the correlation plot). With highly correlated variables, backward, unlike forward, is usually forced to keep both variables and not omitting both of them - so we are more likely to keep those important effects. Also, forward may cause suppressor effects when it forces some of predictors to be constant to make others significant. To sum up, we would most likely use forward only in a case when we have more predictors than data points.
+
+Let's find the optimal variable set using cross-validated backward regression:
+
+### **4.2: Running backward stepwise regression**
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+stepwise <- train(Crime~.,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lmStepAIC",
+                     direction = "backward", trace=F)
+summary(stepwise)
+```
+
+As we can see, backward stepwise regression run on full variable set suggests us to use a model with **8 variables: M + Ed + Po1 + M.F + U1 + U2 + Ineq + Prob**. R2 **on the training set** is **78.88%**, and **Adjusted R2 is 74.44%**.
+
+**The p-value for one of the predictors, M.F., is 0.10**. We can keep it for now and use it in a model, since it is lower than 0.15: it might turn out that this factors is just dragging the quality of the model down, or it might turn out to be important. Let's keep it for now.
+
+### **4.3: Linear Regression using the variables from stepwise regression**
+
+Now we can use those variables only to build a linear regression model and **cross-validate** it (cross-validation above was used to choose the best predictor set only, not to validate the final chosen set). I will use caret with **leave-one-out CV**, since we have so few data points.
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+m1 <- train(Crime ~ M + Ed + Po1 + M.F + U1 + U2 + Ineq + Prob,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+m1$results
+summary(m1)
+```
+
+As we can see, after cross-validation, the **R2 is 67.4%**. Will it improve if we remove the M.F. predictor with p-value of 0.1? Let's check:
+
+### **4.4: Removing insignificant predictors from the model**
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+m2 <- train(Crime ~ M + Ed + Po1 + U1 + U2 + Ineq + Prob,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+m2$results
+summary(m2)
+```
+
+Now, **on training data we have a slightly lower R2 of 77.4% (compared to 77.88 before), and after cross-validation it reduces to 66.8%** - this is not a significant reduction, so removing M.F. seems to have been the right choice.
+
+However, **now U1 looks insignificant with a p-value of 0.24 - way higher than 0.15**. Let's remove that as well and cross-validate the new model to see the change:
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+m3 <- train(Crime ~ M + Ed + Po1 + U2 + Ineq + Prob,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+m3$results
+summary(m3)
+
+```
+
+**This run, all predictors are significant, so the model looks good**. Moreover, **R2 on training data is 76.6%, and 67.1% after cross-validation**. 
+
+### **4.5: Final model evaluation**
+
+With the final model we get a better result compared to the previous model, and a very similar one to the model with 8 parameters. **Another improvement is the reduction of mean absolute error MAE to 165.5, compared to 174 in the model with 8 variables and 167 in the model with 7**. It means that the average error for a prediction made with this model would be lower compared to the others. 
+
+Considering that **the model with 6 predictors is simpler than the others, hence, easier to explain**, has **lower MAE** and **similar performance based on R2**, we should choose it as the final one.
+
+```{r}
+m3$finalModel
+```
+
+If we take a look at coefficients, we can see that there are 6 significant factors affecting the Crime rate in a state. 5 of them have a positive effect on the crime number (increase it) - percentage of males aged 14-24 in total population (M), mean years of schooling for people aged 25+ (Ed), police protection expenditure in 1960 (Po1), unemployment rate of 35-39y.o. males (U2) and Income inequality (Ineq). Probability of imprisonment has a negative effect (reduces) on Crime. The largest coefficient (and effect) is once again on Po1 (police protection expenditure 1960). It is followed by Inequality and Education.
+
+## **Step 5: Observing benefits and drawbacks Stepwise Regression**
+
+There are several **benefits** that I observed while performing stepwise regression:
+
+- It was easy to implement: we just needed to run 1 function to get the narrowed down set of variables. We did scale the data beforehand, but it was a logical step considering the different scales of parameters.
+
+- It helped generalize our model: at the beginning we had 15 predictors for 47 data points, some predictors were describing similar factors (like Wealth and Inequality, U1 and U2, etc), some were highly correlated. Stepwise regression helped us quickly reduce the number of predictors to 8, which also gave a good quality of fit
+
+- It made the model easier to interpret: explaining a model with fewer variables is always better.
+
+As a **drawback** of implementation, I can point out the fact that not all of the variables we got were significant - we still had to remove two of them to come to a model with significant parameters only. Also, we still had to build new models and cross-validate them separately, so it is not a 1-function solution (which is not a problem).
+
+Overall, this method sets a good baseline for further analysis and gives a quick, simple, easy-to-explain solution. We can now use these results to compare stepwise to other methods.
+
+
+## **(Additional) Step 6: Stepwise Regression on PCA**
+
+Although the results we got with backward stepwise regression seem to be better than what we had before, and the model is simple and easy to explain, it is still worth to try improving the quality of the model by running it on PCA.
+
+In general, PCA can be helpful for cases with few data points, as it gets more variability within its first components, which we can use to find variables with higher effect on the respones.
+
+### **6.1: Principal Component Analysis**
+
+Start by running PCA on the data (excluding the response):
+
+```{r}
+pca <- prcomp(data[,-16], 
+              scale. = TRUE 
+              )
+summary(pca)
+```
+
+The first component explains the highest proportion of variance  - 40.13% and has a standard deviation of 2.45.
+
+Check how much variance explained reduces with each PC:
+
+```{r}
+explained_var <- pca$sdev^2/sum(pca$sdev^2)
+explained_var_round<-round(explained_var,4)
+#plot explained variance by each PC:
+
+qplot(c(1:15), explained_var_round,) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Proportion of Variance Explained") +
+  ggtitle("Proportion of Variance explained by each Principal Component") +
+  ylim(0, 1) +
+  geom_text(aes(label=explained_var_round*100),vjust=-2)+
+  theme_stata()
+
+cumsum_var <- cumsum(explained_var)
+cumsum_var_round <- round(cumsum_var,4)
+#plot cumulative explained variance by each PC:
+
+qplot(c(1:15), cumsum_var_round,) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Cumulative Proportion of Variance Explained") +
+  ggtitle("Cumulative Proportion of Variance explained by each Principal Component") +
+  ylim(0, 1) +
+  geom_text(aes(label=cumsum_var_round*100),vjust=2)+
+  theme_stata()
+
+screeplot(pca, npcs=15)
+```
+
+Based on the screeplot, we could choose the first 5 PCs and run stepwise on them. However, since stepwise regression is supposed to be reducing the number of variables,and those on the very right might have least variance, but not necessarily the least predictive power, let's run stepwise on all the components and see which ones would be left.
+
+Add response variable to PCs:
+
+```{r}
+pca_data <- as.data.frame(cbind(pca$x, Crime=data[,16]))
+head(pca_data)
+```
+
+
+### **6.2: Stepwise Regression on all PCs**
+
+Let's use the same parameters of repeated cross-validation and run backward stepwise regression on all components:
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+stepwise_pca <- train(Crime~.,
+                     data=pca_data,
+                     trControl=data_ctrl,
+                     method="lmStepAIC",
+                     direction = "backward", trace=F)
+summary(stepwise_pca)
+```
+
+As we can see, this time we have **9 predictors suggested for use by stepwise method**. Even the last two components were used. On training data, we have a similar R2 value of 78.2 and adjusted R2 of 72.9. 
+
+### **6.3: Linear regression on predictors from stepwise regression **
+
+Let's use the variables suggested by stepwise regression to build a new model and cross-validate it. Although some predictors do not seem to be significant, let's still include them in the first model:
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+m1_pca <- train(Crime ~ PC1 + PC2 + PC4 + PC5 + PC6 + PC7 + PC12 + PC14 + PC15,
+                     data=pca_data,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(m1_pca)
+m1_pca$results
+
+```
+
+Compared to the models run on initial variables, not PCs, we have a worse result - **R2 of 64% after cross-validation**, and higher errors. Perhaps it is caused by the two insignificant variables in the model? Let's try removing them.
+
+### **6.4: Final set of predictors**
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+#removing PC6 and PC15
+m2_pca <- train(Crime ~ PC1 + PC2 + PC4 + PC5 + PC7 + PC12 + PC14 ,
+                     data=pca_data,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(m2_pca)
+m2_pca$results
+```
+
+**No significant improvements - R2 of 63% after cross-validation, and a larger MAE compared to the previous model**. However, this model is **simpler, so it is easier to explain**. 
+
+Comparing this model run on PCs to the one with initial variables, I would choose the latter, since the model with initial variables showed better performance, higher R2 and a lower error.
+
+## **Step 7: Stepwise Regression: Summary of Results**
+
+| **Model**	| **Predictors**	|	**R2 (training)**	|	**Adj. R2 (training)**| **R2 (cross-validated)**|
+| ------- | ------- | ------- | ------- | ------- |
+| **Stepwise Regression**, original data, all variables | M, Ed, Po1, M.F., U1, U2, Ineq, Prob | 78.88 | 74.44 | 67.38 |
+| **Stepwise Regression**, original data, significant variables | M, Ed, Po1, U2, Ineq, Prob | 76.59| 73.07 | 67.07 |
+| **Stepwise Regression**, PCA data, all variables | PC1, PC2, PC4, PC5, PC6, PC7, PC12, PC14, PC15 | 78.23 | 72.93 | 63.99 |
+| **Stepwise Regression**, PCA data, significant variables | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+
+Generally, all models seem to provide a better result compared to previous models, suggesting that this approach is better for our data. The best model among the ones with stepwise regression appears to be the one with significant variables only, as it has lower errors and good R2 values after cross-validation. It is  also simpler to explain with fewer variables. The use of PCA was not helpful for this data set, but perhaps it would have been benefitial on different data.
+
+# **2. Lasso Regression**
+
+## **Step 1: Preparing the data**
+
+Moving onto the LASSO Regression, we know that we need scaled data, so we will be using our **scaled data** set from previous section. Since LASSO is a good method for data with multicollinearity (which we suspected during data exploration), it might give us a better model than stepwise regression.
+
+For LASSO, we need matrices of the response and predictor variables:
+
+```{r}
+y <- data.matrix(scaled$Crime)
+head(y)
+x <- data.matrix(scaled[,-16])
+head(x)
+```
+
+## **Step 2: Cross-validated LASSO**
+
+Next, we perform 5-fold cross-validation to find the **optimal lambda value that minimizes test MSE**:
+
+```{r}
+set.seed(1)
+lasso <- cv.glmnet(x, y, #matrices
+                   alpha=1,
+                   nfolds=5, #5-fold CV
+                   type.measure='mse', #use MSE to find best lambda
+                   family='gaussian') #in r refers to normal distribution 
+                    
+best.lambda <- lasso$lambda.min
+best.lambda
+
+plot(lasso)
+
+```
+
+As we can see, the best lambda found is 14.71. On the plot, the dashed lines are the log(lambda) values, and the left of those lines is the min lambda, for which the model has the lowest mean squared error after cross-validation. The right dashed line is the lambda with 1 standard error that is supposed to be less prone to overfitting. Top numbers are the number of the non-zero coefficients in our model (so min lambda corresponds to something between 9-11 predictors, and lambda with 1 standard error corresponds to 5-9), and we can see how **with increasing lambda from left to right on the plot the penalty for the inclusion of new features is increasing, and the number of variables in the model is becoming lower**.
+
+Let's use the min lambda as the best one and see, which variables are selected with it by lasso method:
+
+```{r}
+coefs_minlambda <- coef(lasso, s=best.lambda)
+coefs_minlambda
+```
+
+As expected, we have 12 variables that lasso suggests. The other predictors have zero coefficients. With min lambda, Lasso suggests the following predictors: **So + M + Ed + Po1 + LF + M.F + NW + U2 + Ineq + Prob**.
+
+**Compared to stepwise regression, LASSO provided more predictors that should be used** and we need to compare both cross-validated model to see if that would be good for our data, considering that we do not have so many data points, and the predictor-data set ration is not well balanced when 10 predictors are used.
+
+During further analysis I will also keep in mind the **lambda+1st.error**, which, according to the plot, suggests to use less variables. This line on the plot shows the lambda that is supposed to reduce overfitting in the model. Let's check what lambda value this is and which coefficients it suggests to use:
+
+```{r}
+lambda.1se <-lasso$lambda.1se
+lambda.1se
+coefs_1selambda <- coef(lasso, s=lambda.1se)
+coefs_1selambda
+```
+
+So for lambda+1se we would use **M+Ed+Po1+M.F.+Ineq+Prob**. Let's try both lambdas in our analysis.
+
+
+We could use glmnet to build another lasso model with the best lambda, but I want to see how significant each of those coefficients would be if we use them in a linear regression. I also want to be able to adjust this set of predictors from lasso in case not all variables are significant to create a better model. So, I will go back to the caret package to build a model with those variables and cross-validate it. 
+
+## **Step 3: Linear Regression using variables suggested by LASSO (min lambda)**
+
+Let's start by running a linear regression on all variables with non-zero coefficients from Lasso. I will also **cross-validate the model using leave-one-out CV** so that we get a more real R2 value:
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+lasso1 <- train(Crime ~ So + M + Ed + Po1 + LF + M.F + NW + U2 + Ineq + Prob,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(lasso1)
+lasso1$results
+```
+
+The model on training set is **overfit**, as it has an **R2 of 77.7% and Adjusted R2 of 71.5**, and only an **R2 of 60.1% after cross-validation**.
+
+Moreover, **not all variables are significant**. Those that are not have**p-values of 0.15, so we would not consider them for our model - they are very unlikely to contain important effects**. 
+
+## **Step 4: Linear Regression using only significant variables (min lambda)**
+
+The significant variables are: **M, Ed, Po1, U2, Ineq, Prob**, and those are **the same variables that compose our final model after stepwise regression** - we came to that after excluding insignificant ones. So **both LASSO with min lambda and stepwise regression lead us to the same final model**. There is no need to rebuild the same model again:
+
+```{r}
+summary(m3)
+m3$results
+```
+
+As we know, this model has **6 variables, R2=76.6% and adjusted R2=73.1% on training data, and R2 of 67.1% after cross-validation**, and we have already described the coefficients of this model in the past section.
+
+## **Step 4: Linear Regression using variables suggested by LASSO (lambda+1se)**
+
+Having seen that the final model we come to after narrowing down significant coefficients from Lasso with min lambda, let's also check what happens if we go for the predictor set provided by lambda + 1 standard error value.
+
+Why should we use this value? 
+
+**Lambda1se can provide us with a simpler model, which has comparable accuracy with the best model**. Min lambda uses more variable, hence the higher quality and smaller error of a model built on its suggested variables can be due to **overfit**. Lambda+1se, on the other hand, leads to a model that does not sacrifice too much quality, but provides a less overfit model with a simpler set of variables.
+
+Using lambda1se would be logical for our set, since **we have only 47 data points, and the ideal number of parameters according to the 10:1 ratio is 4-5, not 15 as we have.** A min lambda can give us a better fit on the training set, but as we saw, after cross validation this quality fades once we reduce the overfit.
+
+Let's see if using lambda1se would lead us to a significantly worse quality with all variables, and if we would end up with a better model after cross-validation. Use 6 variables from lambda1se to fit and cross-validate a model:
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+lasso2 <- train(Crime ~ M + Ed + Po1 + M.F + Ineq + Prob,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(lasso2)
+lasso2$results
+```
+
+**Although we have a lower R2=75% and adjusted R2=71.3% on training data, after cross validation R2 is 64.3%, which is better compared to the cross-validate model using the variables suggested by min lambda**. However, one of the variables, M.F, is insignificant and has a p-value of 0.168. Let's remove it to see if the model improves:
+
+## **Step 5: Linear Regression on significant variables, LASSO (lambda+1se)**
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+lasso3 <- train(Crime ~ M + Ed + Po1 + Ineq + Prob,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(lasso3)
+lasso3$results
+```
+
+**The model has improved! Although on training R2=73.8% and Adjusted R=70.1%, after cross-validation the R2 has increased to 64.6%, and all the coefficients are now significant**. This is still not as high as R2=67% after cross-validation of the final model with 6 variables for stepwise and lasso with min lambda, but this model has **5 variables instead of 6, so it is even more easy to explain, and the predictor:data points ration is close to 1:10 now, which is perfect**. If we needed to simplify our previous final model, this is the one we would choose.
+
+## **(Additional) Step 6: LASSO Regression on PCA**
+
+Let's repeat the same process on Principal components and see if this time the model would benefit from it. As the last time with stepwise, I will use all PCs to let the lasso method decide which variables we should use:
+
+```{r}
+set.seed(1)
+#matrices
+y.pca <- data.matrix(pca_data$Crime)
+x.pca <- data.matrix(pca_data[,-16])
+
+#LASSO
+lasso.pca <- cv.glmnet(x.pca, y.pca, #matrices
+                   alpha=1,
+                   nfolds=5, #5-fold CV
+                   type.measure='mse', #use MSE to find best lambda
+                   family='gaussian') #in r refers to normal distribution 
+                    
+best.lambda.pca <- lasso.pca$lambda.min
+best.lambda.pca
+
+plot(lasso.pca)
+```
+
+With LASSO run on PCA data, our min lambda is 19 and it suggests to use 12 predictors (left dashed line). And lambda1se suggests something between 8-9 predictors. Let's see coefficients suggested by both.
+
+For min lambda  the coefficients are:
+
+```{r}
+coef(lasso.pca, s=best.lambda.pca)
+```
+
+The best lambda that minimizes MSE and as many variables as possible to have that best fit, suggests to use 12 coefficients in the model : PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC10 + PC12 + PC13 + PC14 + PC15.
+
+Check what lambda1se suggests:
+
+```{r}
+lambda.1se.pca <-lasso.pca$lambda.1se
+lambda.1se.pca
+coef(lasso.pca, s=lambda.1se.pca)
+
+```
+
+Lambda 1se, which allows a bit more error to reduce overfit but get similar results to the best fit, suggests to use 9 parameters: PC1 + PC2 + PC4 + PC5 + PC6 + PC7 + PC12 + PC14 + PC15.
+
+Let's build models using both suggestsions. Start with min lambda set - 12 predictors:
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+lassopca1 <- train(Crime ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC10 + PC12 + PC13 + PC14 + PC15,
+                     data=pca_data,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(lassopca1)
+lassopca1$results
+```
+
+Just as with initial data, **we get a high R2=79.8% and Adj R2=72.7%, and a significantly lower R2= 60.3% after cross-validation.** Also, **not all variables are significant** - so let's redo the model and leave only those that are important: 
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+lassopca2 <- train(Crime ~ PC1 + PC2 + PC4 + PC5 + PC7 + PC12 + PC14,
+                     data=pca_data,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(lassopca2)
+lassopca2$results
+```
+
+With significant variables only, the result is better: **R2=75.7% and Asj R2=71.3% on the training set, and R2=63.3% after cross-validation**. But still not as good as the final model on initial data with R2 of 67%.
+
+Let's see if we would end up with a different model using the lambda 1se set of parameters. Use the 9 variables
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+lassopca3 <- train(Crime ~ PC1 + PC2 + PC4 + PC5 + PC6 + PC7 + PC12 + PC14 + PC15,
+                     data=pca_data,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(lassopca3)
+lassopca3$results
+```
+
+Better than the first model on pca with min lambda predictors, but still 2 varaiables are insignificant. **On training data we have R2=78.2% and Adj R2=72.9, and R2=63.99 after cross-validation**. 
+
+Notice that the same variables are significant as in the previous model - so we would end up with the **same final model** on pca using lasso after leaving significant coefficients only.
+
+## **Step 7: LASSO: Summary of Results**
+
+As we have seen, LASSO is also relatively simple to implement, and it also gives some freedom with the opportunity to opt for different lambdas and therefore different sets of variables.
+
+On our data, LASSO led to initial models with more variables compared to stepwise regression, but we ended up with the same final model and set of predictors as stepwise regression. 
+
+PCA, once again, did not help to get a better model - perhaps for our small data set Lasso method works better on the initial variables. However, with Lasso we got the same set of final model parameters (PCs), as with stepwise regression - so both approaches confirm that those are the best solutions. Different lambda options from lasso on PCA data also led us to the same final models.
+
+| **Model**	| **Predictors**	|	**R2 (training)**	|	**Adj. R2 (training)**| **R2 (cross-validated)**|
+| ------- | ------- | ------- | ------- | ------- |
+| **Lasso Regression**, original data, all variables (min lambda) | So, M, Ed, Po1, LF, M.F, NW, U2, Ineq, Prob | 77.67 | 71.47 | 60.1 |
+| **Lasso Regression**, original data, significant variables (min lambda) | M, Ed, Po1, U2, Ineq, Prob | 76.59 | 73.07 | 67.07 |
+| **Lasso Regression**, original data, all variables (lambda+1se) | M, Ed, Po1, M.F, Ineq, Prob | 75.02 | 71.27 | 64.32 |
+| **Lasso Regression**, original data, significant variables (lambda+1se) | M, Ed, Po1, Ineq, Prob | 73.79 | 70.5 | 64.56 |
+| **Lasso Regression**, PCA data, all variables (min lambda) | PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC10, PC12, PC13, PC14, PC15 | 79.81 | 72.69 | 60.25 |
+| **Lasso Regression**, PCA data, significant variables (min lambda) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+| **Lasso Regression**, PCA data, all variables (lambda+1se) | PC1, PC2, PC4, PC5, PC6, PC7, PC12, PC14, PC15 | 78.23 | 72.93 | 63.99 |
+| **Lasso Regression**, PCA data, significant variables (lambda+1se) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+
+# **3. Elastic Net**
+
+## **Step 1: Choosing the value of alpha**
+
+To perform elastic net, we need to input an alpha value. Let's test several alphas and see which R2 we get for each cross-validated elastic net.
+
+We use alpha values from 0 to 1 with a 0.05 step and for each do elastic net with 5-fold cross validation. 
+Then, we compare R2 for each alpha: within each alpha value we have different values of lambda used in elastic net that lead to different amount of deviance explained. Just as with Lasso, we can choose the **min lambda, which gives the best fit and lowest error**, and get the explained deviance share from each alpha model's fit - since it is a regression model, this is the same as R2.
+
+```{r}
+set.seed(1)
+r2list<-c()
+alphalist <- seq(0,1,by=0.05)
+for (i in alphalist){
+  
+  elasticnetcv = cv.glmnet(x, y, alpha=i,nfolds = 5,type.measure="mse",family="gaussian") 
+  
+  r2list = cbind(r2list,
+                elasticnetcv$glmnet.fit$dev.ratio[which(elasticnetcv$glmnet.fit$lambda == elasticnetcv$lambda.min)])}
+
+#merge results in a data frame
+alpha_r2 <- data.table(alphalist, t(r2list))
+colnames(alpha_r2) <- c('alpha', 'R2')
+alpha_r2
+```
+
+Now that we have R2 values for min lambda for each alpha, let's find the highest R2 to figure out which alpha we should use:
+
+```{r}
+alpha_r2[which.max(alpha_r2$R2)]
+```
+
+Looks like the best R2 is achieved with min lambda for alpha=0.3.
+
+## **Step 2: Selecting variables with Elastic Net**
+
+Now that we know the best alpha, let's get the coefficients of this model: we rebuild the elastic net model using alpha=0.3 and get the coefficients:
+
+```{r}
+set.seed(1)
+#elastic net
+elasticnetcv <- cv.glmnet(x, y, alpha=0.3, nfolds = 5,type.measure="mse",family="gaussian") 
+#get coefs
+coef(elasticnetcv, s=elasticnetcv$lambda.min)
+coef(elasticnetcv, s=elasticnetcv$lambda.1se)
+```
+
+As we can see, with Elastic net and min lambda we get 14 variables selected out of 15, and with lambda+1se we get 11.
+
+```{r}
+plot(elasticnetcv)
+```
+
+As we can see, elastic net suggests that the error would be very high for fewer than 11 variables. The left vertical line shows that best fit with lowest error (and more overfitting) is ar 14 variables, and the right line shows that we can go down to 11 variables to keep a similar quality of fit in order to reduce overfitting.
+
+Let's see how the 2 models would perform on training data and after cross-validation.
+
+
+## **Step 3: Linear regression on all variables from Elastic net (min lambda)**
+
+Let's start with the min lambda which is supposed to provide the best fit. Let's see the R2 after cross-validation and if many variables are significant (since 14 seems like to many for 47 data points):
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+net1 <- train(Crime ~ .-Time,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(net1)
+net1$results
+```
+
+This is not surprising: **R2 on training is 80.16%, Adjusted R2=71.5%, but after cross-validation R2 is only 56.5 - worst we've seen so far**. Moreover, only 6 predictors are significant - **the same set of variables as in our final models after stepwise and lasso regressions**!  So we end up with the same model which has the best R2 of 67% after cross-validation:
+
+```{r}
+summary(m3)
+m3$results
+```
+
+Let's not describe this model another time and move on to linear regression on variables that we got with lambda+1se.
+
+## **Step 4: Linear regression on all variables from Elastic net (lambda+1se)**
+
+Let's check how bad or good the results are after cross-validation of the model with 11 variables which we got using elastic net with alpha 0.3 and lambda+1se
+
+```{r}
+set.seed(1)
+#leave-one-out CV
+data_ctrl <- trainControl(method = "LOOCV")
+
+net2 <- train(Crime ~ .- Time - Pop - U1 - Wealth ,
+                     data=scaled,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(net2)
+net2$results
+```
+
+The results are not good for this model either: **R2=77.96% , Adj R2=71.03% on training set, but R2=58.76% is achieved after cross-validation.** **5 variables are significant - the same ones we had in the final model for lasso with lambda+1se** - so we once again have come to the same 2 final models for our data, confirmed by all the methods - it's a great sign that those two models are really the best on initial data.
+
+## **(Additional) Step 5: Elastic Net on PCA**
+
+Let's repeat the process for PCA data to see if we get something better:
+
+```{r}
+set.seed(1)
+r2list<-c()
+alphalist <- seq(0,1,by=0.05)
+for (i in alphalist){
+  
+  elasticnetcvpca = cv.glmnet(x.pca, y.pca, alpha=i,nfolds = 5,type.measure="mse",family="gaussian") 
+  
+  r2list = cbind(r2list,
+                elasticnetcvpca$glmnet.fit$dev.ratio[which(elasticnetcvpca$glmnet.fit$lambda == elasticnetcvpca$lambda.min)])}
+
+#merge results in a data frame
+alpha_r2_pca <- data.table(alphalist, t(r2list))
+colnames(alpha_r2_pca) <- c('alpha', 'R2')
+alpha_r2_pca
+```
+
+Find best alpha:
+
+```{r}
+alpha_r2_pca[which.max(alpha_r2_pca$R2)]
+```
+
+This run the best alpha is 0.55. Let's get the coefficients for both lambdas:
+
+```{r}
+set.seed(1)
+#elastic net
+elasticnetcvpca <- cv.glmnet(x.pca, y.pca, alpha=0.55, nfolds = 5,type.measure="mse",family="gaussian") 
+#get coefs
+coef(elasticnetcvpca, s=elasticnetcvpca$lambda.min)
+coef(elasticnetcvpca, s=elasticnetcvpca$lambda.1se)
+```
+
+```{r}
+plot(elasticnetcvpca)
+```
+
+Once again, many variables are suggested by elastic net. Min lambda recommends to use 12 variables, and lambda+1se - 9.
+
+With min lambda, we get the same set of variables as with PCA in Lasso with min lambda:
+
+```{r}
+summary(lassopca1)
+lassopca1$results
+```
+
+And this result narrows down to the same model with all 7 significant PCs:
+
+
+```{r}
+summary(lassopca2)
+lassopca2$results
+```
+
+The results, as we remember, still do not exceed the R2 after cross-validation that we had for the final model on the initial data.
+
+The same goes for lambda+1se - it is the exact same set of PC components as in lasso's PCA model with lambda+1se:
+
+```{r}
+summary(lassopca3)
+lassopca3$results
+```
+
+And with all significant coefficients, we get the same final model as with min lambda (the second model above called lassopca2).
+
+## **Step 6: Elastic Net: Summary of Results**
+
+As we have seen, with Elastic Net we don't get any new final models - with initial data it comes down to the best model we've seen so far on this set - the one with R2 of 67% after CV. With PCA, all the models we get with Elastic Net are exactly the same as the ones we got with Lasso.
+
+Elastic Net was the most complex to implement
+
+LASSO is also relatively simple to implement, and it also gives some freedom with the opportunity to opt for different lambdas and therefore different sets of variables.
+
+On our data, LASSO led to initial models with more variables compared to stepwise regression, but we ended up with the same final model and set of predictors as stepwise regression. 
+
+PCA, once again, did not help to get a better model - perhaps for our small data set Lasso method works better on the initial variables. However, with Lasso we got the same set of final model parameters (PCs), as with stepwise regression - so both approaches confirm that those are the best solutions. Different lambda options from lasso on PCA data also led us to the same final models.
+
+| **Model**	| **Predictors**	|	**R2 (training)**	|	**Adj. R2 (training)**| **R2 (cross-validated)**|
+| ------- | ------- | ------- | ------- | ------- |
+| **Elastic Net**, original data, all variables (alpha=0.3, min lambda) | So, M, Ed, Po1, Po2, LF, M.F, Pop, NW, U1, U2, Wealth, Ineq, Prob | 80.16 | 71.48 | 56.52 |
+| **Elastic Net**, original data, significant variables (alpha=0.3, min lambda) | So, M, Ed, Po1,Po2, LF, M.F, NW, U2, Ineq, Prob | 77.96 | 71.03 | 58.76 |
+| **Elastic Net**, original data, all variables (alpha=0.3, lambda+1se) | M, Ed, Po1, M.F, Ineq, Prob | 75.02 | 71.27 | 64.32 |
+| **Elastic Net**, original data, significant variables (alpha=0.3, lambda+1se) | M, Ed, Po1, U2, Ineq, Prob | 76.59 | 73.07 | 67.07 |
+| **Elastic Net**, PCA data, all variables (alpha=0.55, min lambda) | PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC10, PC12, PC13, PC14, PC15 | 79.81 | 72.69 | 60.25 |
+| **Elastic Net**, PCA data, significant variables (alpha=0.55, min lambda) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+| **Elastic Net**, PCA data, all variables (alpha=0.55, lambda+1se) | PC1, PC2, PC4, PC5, PC6, PC7, PC12, PC14, PC15 | 78.23 | 72.93 | 63.99 |
+| **Elastic Net**, PCA data, significant variables (alpha=0.55, lambda+1se) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+
+# **Final Thoughts**
+
+As we have seen through our analysis, all three methods are different from each other, and tend to suggest different variables for use, but after removal of insignificant variables from linear regression we are always left with the same set of variables and the same model for both, initial data and PCA data.
+
+PCA did not give any benefit to any of the methods - although we were able to achieve good models with all significant variables, the R-squared after cross-validation was still smaller compared to the final model based on initial data. Of course, this does not suggest that PCA is useless in such methods - it just was not the best approach for our data set in particular.
+
+As for the methods we have tried, the stepwise regression seems like a good initial technique that provides a quick solution and insight into the data patterns. Elastic Net was the most complex one to apply, however it had more tuning parameters that we could experiment with, which is great for complex data sets.
+
+Overall, for our data the stepwise approach appeared to be enough - the other models used more variables, but did not perform as well after cross-validation. However, it is clear that it is important to apply different methods to make sure that there is no better model - and for different data sets, different approaches could be found best. Perhaps sometimes it is also beneficial to try more parameters than we end up with in the final model - we can always remove the insignificant ones.
+
+Here is the final table of all the models we have built - although not all of them performed as great as the model with 6 predictors and R2 of 67% after cross-validation, the results in general are much better than what we have seen for this data set in the previous projects, meaning that variable selection techniques can be very helpful:
+
+| **Model**	| **Predictors**	|	**R2 (training)**	|	**Adj. R2 (training)**| **R2 (cross-validated)**|
+| ------- | ------- | ------- | ------- | ------- |
+| **Stepwise Regression**, original data, all variables | M, Ed, Po1, M.F., U1, U2, Ineq, Prob | 78.88 | 74.44 | 67.38 |
+| **Stepwise Regression**, original data, significant variables | M, Ed, Po1, U2, Ineq, Prob | 76.59| 73.07 | 67.07 |
+| **Stepwise Regression**, PCA data, all variables | PC1, PC2, PC4, PC5, PC6, PC7, PC12, PC14, PC15 | 78.23 | 72.93 | 63.99 |
+| **Stepwise Regression**, PCA data, significant variables | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+| **Lasso Regression**, original data, all variables (min lambda) | So, M, Ed, Po1, LF, M.F, NW, U2, Ineq, Prob | 77.67 | 71.47 | 60.1 |
+| **Lasso Regression**, original data, significant variables (min lambda) | M, Ed, Po1, U2, Ineq, Prob | 76.59 | 73.07 | 67.07 |
+| **Lasso Regression**, original data, all variables (lambda+1se) | M, Ed, Po1, M.F, Ineq, Prob | 75.02 | 71.27 | 64.32 |
+| **Lasso Regression**, original data, significant variables (lambda+1se) | M, Ed, Po1, Ineq, Prob | 73.79 | 70.5 | 64.56 |
+| **Lasso Regression**, PCA data, all variables (min lambda) | PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC10, PC12, PC13, PC14, PC15 | 79.81 | 72.69 | 60.25 |
+| **Lasso Regression**, PCA data, significant variables (min lambda) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+| **Lasso Regression**, PCA data, all variables (lambda+1se) | PC1, PC2, PC4, PC5, PC6, PC7, PC12, PC14, PC15 | 78.23 | 72.93 | 63.99 |
+| **Lasso Regression**, PCA data, significant variables (lambda+1se) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+| **Elastic Net**, original data, all variables (alpha=0.3, min lambda) | So, M, Ed, Po1, Po2, LF, M.F, Pop, NW, U1, U2, Wealth, Ineq, Prob | 80.16 | 71.48 | 56.52 |
+| **Elastic Net**, original data, significant variables (alpha=0.3, min lambda) | So, M, Ed, Po1,Po2, LF, M.F, NW, U2, Ineq, Prob | 77.96 | 71.03 | 58.76 |
+| **Elastic Net**, original data, all variables (alpha=0.3, lambda+1se) | M, Ed, Po1, M.F, Ineq, Prob | 75.02 | 71.27 | 64.32 |
+| **Elastic Net**, original data, significant variables (alpha=0.3, lambda+1se) | M, Ed, Po1, U2, Ineq, Prob | 76.59 | 73.07 | 67.07 |
+| **Elastic Net**, PCA data, all variables (alpha=0.55, min lambda) | PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC10, PC12, PC13, PC14, PC15 | 79.81 | 72.69 | 60.25 |
+| **Elastic Net**, PCA data, significant variables (alpha=0.55, min lambda) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
+| **Elastic Net**, PCA data, all variables (alpha=0.55, lambda+1se) | PC1, PC2, PC4, PC5, PC6, PC7, PC12, PC14, PC15 | 78.23 | 72.93 | 63.99 |
+| **Elastic Net**, PCA data, significant variables (alpha=0.55, lambda+1se) | PC1, PC2, PC4, PC5, PC7, PC12, PC14 | 75.69 | 71.33 | 63.30 |
