@@ -1,0 +1,1305 @@
+---
+title: "Breast Cancer Data: Handling Missing Values"
+author: "Alena Fedash"
+always_allow_html: true
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+date: "2022-10-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Please find below my step-by-step solution in R with explanations and comments for each step.**
+
+## **Question 1**
+
+**Task:** Use the mean/mode imputation method to impute values for the missing data. 
+
+### **Step 0: Load the libraries**
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(qcc)
+library(mctest)
+library(ppcor)
+library(car)
+library(psych)
+library(ggthemes)
+library(corrplot)
+library(DAAG)
+library(GGally)
+library(caret)
+library(psych)
+library(ggpubr)
+library(tree)
+library(randomForest)
+library(vip)
+library(rsample)
+library(knitr)
+```
+
+### **Step 1: Load the data set**
+
+```{r}
+
+data <- read.table("breast-cancer-wisconsin.data.txt", 
+                   header = FALSE, 
+                   stringsAsFactors = FALSE,
+                   sep = ",", 
+                   dec = ".")
+head(data)
+```
+
+As we can see, the data set lacks column names. Let's set them for better understanding of the data, and also set the types of data contained in each column.
+
+Id number is an integer variable, columns 2 through 9 are values for each attribute on a scale from 1 to 10, so we can set them as integers too, and the final column is class, which means that we should set it as a factor. Since there are only 2 classes - '2' and '4', lets transform this variable to 0 (benign) and 1 (malignant).
+
+**Atrribute description for further reference:**
+1. Sample code number: id number
+2. Clump Thickness: 1 - 10
+3. Uniformity of Cell Size: 1 - 10
+4. Uniformity of Cell Shape: 1 - 10
+5. Marginal Adhesion: 1 - 10
+6. Single Epithelial Cell Size: 1 - 10
+7. Bare Nuclei: 1 - 10
+8. Bland Chromatin: 1 - 10
+9. Normal Nucleoli: 1 - 10
+10. Mitoses: 1 - 10
+11. Class: (2 for benign, 4 for malignant)
+
+
+```{r}
+#transform response classes to 0 and 1:
+data$V11[data$V11==2] <- 0
+data$V11[data$V11==4] <- 1
+
+#set value types
+data <- transform(data,
+                  #ID Number
+                  V1=as.integer(data$V1),
+                  V2=as.integer(data$V2),
+                  V3=as.integer(data$V3),
+                  V4=as.integer(data$V4),
+                  V5=as.integer(data$V5),
+                  V6=as.integer(data$V6),
+                  V7=as.integer(data$V7),
+                  V8=as.integer(data$V8),
+                  V9=as.integer(data$V9),
+                  V10=as.integer(data$V10),
+                  V11=as.factor(data$V11))
+
+#change column names
+colnames(data) <- c("ID", "Clump_Thickness", "Uniformity_Size", "Uniformity_Shape",
+                 "Marginal_Adhesion", "Single_Epith_Size", "Bare_Nuclei", "Bland_Chromatin",
+                 "Normal_Nucleoli", "Mitoses", "Class")
+summary(data)
+```
+
+### **Step 2: Locate NA Values**
+
+As we can see from the summary of our data above, **there are NA values in only one column - Bare_Nuclei**. There are 16 NAs. Let's see the rows where they are contained:
+
+```{r}
+na<-data[is.na(data$Bare_Nuclei),]
+na
+```
+
+### **Step 3: Is imputation reasonable to use?**
+
+We can see that we have **16 rows with NA values in Bare_Nuclei column**. But is imputation possible here?
+If **NAs constitute less than 5% of the data, then imputation is reasonable to use**. Let's find out if that is the case here - check the share that NA rows constitute from all rows:
+
+```{r}
+nrow(na)/nrow(data)*100
+```
+
+**Rows with NA values are 2.29% of our data - this is less than 5%, so we can continue with imputation**
+
+### **Step 5: Mean Imputation**
+
+I will try both imputation approaches for this task. Let's start with **mean imputation**.
+
+We duplicate our data set 
+
+```{r}
+#create a new data set
+data_mean_imp <- data
+
+#imputation
+data_mean_imp$Bare_Nuclei[is.na(data_mean_imp$Bare_Nuclei)] <- round(mean(data_mean_imp$Bare_Nuclei, na.rm=T))
+data_mean_imp[24:41,]
+
+```
+
+As we can see, **the missing values have been imputed with a mean of 3.55, which we rounded to 4**. We did the rounding, since the 1 to 10 values for the predictors are more like factors, and having a continuous factor value would be incorrect.
+
+Has the distribution of the responses for the Bare_Nuclei column changed much due to imputation? Let's visualize responses before and after imputation to check:
+
+```{r}
+#create indicators of missing or imputing vals data
+Scales <- c(rep("Before (excluding NA's)", 10), rep("After Imputation", 10))
+
+#use our 1-10 values as factors twcie to compare both sets
+Values <- as.factor(rep(names(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])), 2))
+
+#calculate how often those values appear
+Count <- c(as.numeric(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])),
+          as.numeric(table(data_mean_imp$Bare_Nuclei)))
+
+#use all these values as a data frame for the plot 
+bar_nuclei <- data.frame(Scales, Values, Count)
+
+#finally, build the plot 
+ggplot(bar_nuclei, aes(Values, Count, fill = Scales)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_brewer(palette = "Set1") +
+  theme(legend.title = element_blank())+
+  ggtitle('Bare_nuclei Before and After Mode Imputation')
+```
+
+As we can see, due to imputation the number of responses '4' has incrfeased, and is almost double than what it was
+
+Has the mean value of the column changed a lot? Let's see:
+
+```{r}
+#mean before imputation
+mean(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])
+
+#mean after imputation
+mean(data_mean_imp$Bare_Nuclei)
+
+```
+
+Probably due to the fact that NAs only contributed to 2.9% of the data, the mean after imputation has not changed significantly - it is 3.555.
+
+But '4', which we imputed, is in the lower half of the 1-10 scale describing Bare Nuclei. What does this mean for our data - what bias are we adding?
+
+I found out that bare nuclei is a used to describe nuclei not surrounded by cytoplasm, and that **increased bare nuclei is often associated with malignant tumors**. So, by replacing the missing values with mean ones, that are actually in the lower half of 1-10 scale, we might be making our data set slightly more positive, and possibly even risking some patients to whom those missing values refer - what if due to those low imputed values the model would consider their tumor as benign and make a mistake?
+
+**The bias introduced by mean imputation** is obvious - and with this example it is clear why this is one of the main drawbacks of mean imputation, despite the fact that it was easy to perform.
+
+Let's see how **mode imputation** would change the picture.
+
+### **Step 6: Mode Imputation**
+
+Let's do mode imputation.
+
+First, let's find the mode: we get all values present in the column other than the missing ones, get the frequency with which they appear (tabulate function), and then choose the value with the highest frequency of appearance in the column as our **mode**:
+
+```{r}
+#values other than the missing ones in the column:
+val <- unique(data$Bare_Nuclei[!is.na(data$Bare_Nuclei)])   
+
+#Mode of Bare_nuclei
+mode_barenuclei <- val[which.max(tabulate(match(data$Bare_Nuclei, val)))]
+mode_barenuclei
+```
+
+**The mode for bare_nuclei is 1**, which is lower than the mean of 3.545. So, in a way, by imputing values of 1 we are also making the set more positive (if lower bare nuclei are associated with lower risk of cancer).
+
+Let's impute the values:
+
+```{r}
+#duplicate the data set
+data_mode_imp <- data
+
+#imputation
+data_mode_imp$Bare_Nuclei[is.na(data_mode_imp$Bare_Nuclei)] <- mode_barenuclei
+data_mode_imp[24:41,]
+```
+
+
+As we can see, NA values have been replaced with 1 now.
+Have we changes the data significantly? Let's check visually. Since we now have rounded values only, we can check the frequency of responses for each number on the scale:
+
+```{r}
+#create indicators of missing or imputing vals data
+Scales <- c(rep("Before (excluding NA's)", 10), rep("After Imputation", 10))
+
+#use our 1-10 values as factors twcie to compare both sets
+Values <- as.factor(rep(names(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])), 2))
+
+#calculate how often those values appear
+Count <- c(as.numeric(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])),
+          as.numeric(table(data_mode_imp$Bare_Nuclei)))
+
+#use all these values as a data frame for the plot 
+bar_nuclei <- data.frame(Scales, Values, Count)
+
+#finally, build the plot 
+ggplot(bar_nuclei, aes(Values, Count, fill = Scales)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_brewer(palette = "Set1") +
+  theme(legend.title = element_blank())+
+  ggtitle('Bare_nuclei Before and After Mode Imputation')
+```
+
+As we can see, with mode imputation we only affected the first number on response scale, 1.
+
+### **Mode/Mean Imputation - Thoughts **
+
+Mode and mean imputations were relatively easy to perform and understand, which is probably the main benefit of such methods. 
+However, as mentioned above, although both mode and mean imputations have not changed our data set significantly in general, they **might have changed individuals' data enough to make a more positive/negative prediction**. Our data set is about cancer diagnostics, and such imputations can lead to great risks of missing someone's malignant tumor, for example, since we are suggesting to use mean/mode values of a parameters only based on the mean values, without considering any other factors. If Bare nuclei is a significant predictor of breast cancer that affects 50%+ of our 'malignant or benign' prediction for the patient, replacing it with such an extreme value of 1, as we did with mode imputation, might be dangerous - because of our imputation, the patient might be declared as healthy when they really are not.
+
+So, let's see what other imputation methods intail, and how they would compare to the simple methods we have just used.
+
+## **Question 2**
+
+**Task:** Use regression to impute values for the missing data.
+
+### **Step 1: Adjust the data set**
+
+First, before performing linear regression, we need to adjust the data set.
+
+For regression imputation, we will use **column with missing values as the response, and other attributes (excluding the actual response) as predictors**. So let's remove the response and id columns and create a new data set for this purpose:
+
+```{r}
+#get numbers of rows with NA:
+narows <- which(is.na(data$Bare_Nuclei)==T, arr.ind=T)
+
+#create new df without response variable and without NA rows
+data_mod <- data[-narows,2:10]
+head(data_mod)
+```
+
+The new data set is ready, and we can do linear regression now.
+
+### **Step 2: Liner Regression**
+
+First, let's try running a basic linear regression to see how many significant variables we have. If not all are significant, we will use **stepwise regression**, since it is a simple method which would be enough for the purpose of this task - to narrow down the variables used for the model.
+
+As always, I will use caret package so that cross-validation is automatically performed:
+
+```{r}
+set.seed(1)
+#5 fold cross validation with 10 repetitions
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+#use bare_nuclei as the response variable
+reg <- train(Bare_Nuclei~.,
+                     data=data_mod,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(reg)
+```
+
+As we can see, only **3 variables out of 8 are significant with simple linear regression, and R2 of the cross-validated model is 61.5%**.
+
+Hence, **we should use stepwise regression to improve the model and help us select the variables**. I will perform backward stepwise for several reasons:
+
+- we don't have an extreme case where the number of predictors is larger than the number of rows 
+
+- backward has an advantage of starting with a full model (not null as with forward direction), so to start it will simultaneously consider all the variables to help deal with collinearity - backward is more likely to keep more variables in conflicting case, and we don't want to miss anything important when predicting cancer diagnostics.
+
+### **Step 3: Stepwise regression for variable selection**
+
+```{r}
+set.seed(1)
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+stepwise <- train(Bare_Nuclei~.,
+                     data=data_mod,
+                     trControl=data_ctrl,
+                     method="lmStepAIC",
+                     direction = "backward", trace=F)
+summary(stepwise)
+```
+
+**The same 4 variables are significant: Clump_Thickness, Uniformity_Shape, MArginal_Adhesion and Bland_Chromatin** - let's use them to build and cross-validate our final linear regression model that predicts Bare_nuclei values:
+
+```{r}
+set.seed(1)
+
+data_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=10)
+
+model <- train(Bare_Nuclei ~ Clump_Thickness + Uniformity_Shape + Marginal_Adhesion + Bland_Chromatin,
+                     data=data_mod,
+                     trControl=data_ctrl,
+                     method="lm")
+summary(model)
+```
+
+As we can see, our final model has **R2 of 61.3% after cross-validation and 4 significant predictors**. We can now use it to predict the missing values.
+
+### **Step 4: Predicting Missing Values**
+
+Let's use the final model to predict the missing values in bare_nuclei column:
+
+```{r}
+set.seed(1)
+bare_nuclei_pred <- predict(model, newdata=data[narows,])
+bare_nuclei_pred
+```
+
+We have our predictions, but they are integers, and some of them are out of range (lower than 1) - let's round them all and impute rounded values into the data frame:
+
+```{r}
+data_reg_imp <- data
+data_reg_imp[narows,]$Bare_Nuclei <- round(bare_nuclei_pred)
+summary(data_reg_imp$Bare_Nuclei)
+```
+
+As we can see, after rounding predicted values, all the values are within the 1-10 range.
+
+Has the data set changed a lot? Let's visualize:
+
+```{r}
+#create indicators of missing or imputing vals data
+Scales <- c(rep("Before (excluding NA's)", 10), rep("After Imputation", 10))
+
+#use our 1-10 values as factors twcie to compare both sets
+Values <- as.factor(rep(names(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])), 2))
+
+#calculate how often those values appear
+Count <- c(as.numeric(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])),
+          as.numeric(table(data_reg_imp$Bare_Nuclei)))
+
+#use all these values as a data frame for the plot 
+bar_nuclei <- data.frame(Scales, Values, Count)
+
+#finally, build the plot 
+ggplot(bar_nuclei, aes(Values, Count, fill = Scales)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_brewer(palette = "Set1") +
+  theme(legend.title = element_blank())+
+  ggtitle('Bare_nuclei Before and After Regression Imputation')
+```
+
+As we can see, unlike with mode imputation, the distribution of added values with imputation is much better - and probably higher in prediction quality.
+
+### **Regression Imputation - Thoughts**
+
+Although this method was harder to perform than the mode/mean imputation, it was definitely worth it - as we can see on the graph above, regression has helped us not only add a number of same values to the set, but to add to each of the numbers on 1-10 scale with accordance to other predictors values.
+
+Thanks to this, we have more or less real values, which are at least based on something else - other variables in this case, so we can be more certain that when it comes to using the set for class prediction.
+
+## **Question 3**
+
+**Task:** Use regression with perturbation to impute values for the missing data. 
+
+### **Step 1: Perturb the predictions**
+
+First, let's perturb the predicted values using a random normal distribution: we will use predicted values as the mean, and the standard deviation of predicted values as the standard deviation:
+
+```{r}
+set.seed(1)
+pert <- rnorm(nrow(data[narows,]), 
+              mean=bare_nuclei_pred,
+              sd=sd(bare_nuclei_pred))
+pert
+```
+
+As we can see, the values are continuous and need rounding, and there are also some negative values. Let's bound the negative values to positive and also round the values:
+
+```{r}
+pert <- abs(round(pert))
+pert
+
+```
+
+```{r}
+summary(pert)
+```
+
+We can see that we have one 0 value, which is our of range. Let's replace it with the closest value - 1:
+
+```{r}
+pert[which.min(pert)]=1
+pert
+```
+
+### **Step 2: Impute values**
+
+Now let's impute the values that we got with perturbation:
+
+```{r}
+data_pert_imp <- data
+data_pert_imp[narows,]$Bare_Nuclei <- pert
+summary(data_pert_imp$Bare_Nuclei)
+```
+
+The mean is quite close to the mean we had in the initial data.
+
+Let's visualize the changes in the data:
+
+```{r}
+#create indicators of missing or imputing vals data
+Scales <- c(rep("Before (excluding NA's)", 10), rep("After Imputation", 10))
+
+#use our 1-10 values as factors twcie to compare both sets
+Values <- as.factor(rep(names(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])), 2))
+
+#calculate how often those values appear
+Count <- c(as.numeric(table(data$Bare_Nuclei[is.na(data$Bare_Nuclei) == FALSE])),
+          as.numeric(table(data_pert_imp$Bare_Nuclei)))
+
+#use all these values as a data frame for the plot 
+bar_nuclei <- data.frame(Scales, Values, Count)
+
+#finally, build the plot 
+ggplot(bar_nuclei, aes(Values, Count, fill = Scales)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_brewer(palette = "Set1") +
+  theme(legend.title = element_blank())+
+  ggtitle('Bare_nuclei Before and After Regression with Perturbation Imputation')
+```
+
+Looks like the most values were added to the mid-range responses like 3, 4 and 5, but in general the picture of our data has not changed significantly, so imputation with perturbation definitely has not altered the trends in the data set.
+
+### **Regression with Perturbation - Thoughts**
+
+Perturbation is definitely useful to correct the drawback of regression imputation - its inability to capture all the variability of the data. 
+The values we got with perturbation do differ from what we got with regression, and perhaps there was more variability for the mid-range values (3,4,5..) - but in general this method also helped us spread imputed values across the whole 1-10 range, not just add lots of same values, which can be beneficial when the share of data with NA values is closer to 5%.
+
+In general, regression and regression with perturbation imputation method appear to be much better than mean/mode imputation and at first glance show better results on our set.
+
+## **Question 4**
+
+**Task:** (Optional) Compare the results and quality of classification models (e.g., SVM, KNN) build using:
+
+- (1) the data sets from questions 1,2,3;
+
+- (2) the data that remains after data points with missing values are removed
+
+- (3) the data set when a binary variable is introduced to indicate missing values.
+
+
+### **[KNN] Step 1: Sampling **
+
+We have 4 data sets from tasks 1-3, so we will be trying 4 knn models.
+
+First, **we need to split the data into training and test sets**. Let's split it with 75-25 ratio:
+
+1. Data set with mean imputation:
+
+```{r}
+set.seed(1)
+
+#find the number of rows for test set
+index <- round(nrow(data_mean_imp)*0.25,digits=0)
+
+#randomly sample the rows which will go to the test set (20%)
+test_sample <- sample(1:nrow(data_mean_imp), index)
+
+#create the test set - exclude id column
+mean_test <- data_mean_imp[test_sample,2:11]
+head(mean_test)
+
+#create the train set
+mean_train <- data_mean_imp[-test_sample,2:11]
+head(mean_train)
+
+#CHECK PROPORTIONS:
+
+#whole set
+prop.table(table(data_mean_imp$Class))
+
+#test set
+prop.table(table(mean_test$Class))
+
+#train set
+prop.table(table(mean_train$Class))
+```
+
+The train and test sets for mean imputation data have been created, and the proportion of classes is similar throughout all the sets, so we can continue to the other 3 data set and use **the same sample for each set**, so that we can fairly compare the results:
+
+2. Data set with mode imputation:
+
+```{r}
+
+#create the test set - exclude id column
+mode_test <- data_mode_imp[test_sample,2:11]
+head(mode_test)
+
+#create the train set
+mode_train <- data_mode_imp[-test_sample,2:11]
+head(mode_train)
+
+```
+
+3. Data set with regression imputation:
+
+```{r}
+
+#create the test set - exclude id column
+reg_test <- data_reg_imp[test_sample,2:11]
+head(reg_test)
+
+#create the train set
+reg_train <- data_reg_imp[-test_sample,2:11]
+head(reg_train)
+
+```
+
+
+4. Data set with regression+perturbation imputation:
+
+```{r}
+
+#create the test set - exclude id column
+pert_test <- data_pert_imp[test_sample,2:11]
+head(pert_test)
+
+#create the train set
+pert_train <- data_pert_imp[-test_sample,2:11]
+head(pert_train)
+
+```
+
+### **[KNN] Step 2: Preprocessing + Building the Models **
+
+Now that we have the sets, we can build the models. I will use caret so as to validate the models along the way and get a more real accuracy. We will train model on the train set and cross-validate them using repeated cross-validation with 5 folds and 10 repetitions.
+
+**KNN requires normalized/scaled data**, so I will also include preprocessing to standardize the values.
+
+As for k values, I will use k from 1 to 50 and then compare the accuracy of the cross validated model to choose the best k.
+
+**1. Mean imputation KNN:**
+
+```{r}
+set.seed(1)
+mean_knn <- train(as.factor(Class)~.,#Class - response values
+                      mean_train, 
+                      method = "knn",
+                      preProcess = c("center", "scale"), #standardize the data
+                      tuneGrid = data.frame(k = c(1:50)), #use k values from 1 to 50
+                      trControl = trainControl(
+                        method = "repeatedcv", #repeated cross validation
+                        number = 5, #5 k-folds
+                        repeats = 10)) #repeating cross-validation 10 times, each time the folds are split in a different way
+
+mean_knn
+```
+
+As seen in the output, the **best k is 3 for the mean imputation data set**. Let's visualize the results to see how it compares to other k's:
+
+```{r}
+plot(mean_knn)
+```
+
+All k values give high result on the test set after cross-validation, but k=3 is indeed the best one.
+
+We will later test this model on the test set to get true accuracy, but now let's repeat the process on other data sets with other imputation methods.
+
+**2. Mode imputation KNN:**
+
+```{r}
+set.seed(1)
+mode_knn <- train(as.factor(Class)~.,
+                      mode_train, 
+                      method = "knn",
+                      preProcess = c("center", "scale"), 
+                      tuneGrid = data.frame(k = c(1:50)), 
+                      trControl = trainControl(
+                        method = "repeatedcv", 
+                        number = 5, 
+                        repeats = 10)) 
+
+mode_knn
+```
+
+Once again, **the best k for mode imputation set is 3, giving 97.16% accuracy on train set after cross-validation**:
+
+```{r}
+plot(mode_knn)
+```
+
+Looks like knn performs on our data set best with low k values from 3 to 10.
+
+**3. Regression imputation KNN:**
+
+```{r}
+set.seed(1)
+reg_knn <- train(as.factor(Class)~.,
+                      reg_train, 
+                      method = "knn",
+                      preProcess = c("center", "scale"), 
+                      tuneGrid = data.frame(k = c(1:50)), 
+                      trControl = trainControl(
+                        method = "repeatedcv", 
+                        number = 5, 
+                        repeats = 10)) 
+
+reg_knn
+```
+
+The situation does not change for regression imputation set - after cross validation **the best k=3 with accuracy of 97.16%**:
+
+```{r}
+plot(reg_knn)
+```
+
+**4. Regression+perturbation imputation KNN:**
+
+```{r}
+set.seed(1)
+pert_knn <- train(as.factor(Class)~.,
+                      pert_train, 
+                      method = "knn",
+                      preProcess = c("center", "scale"), 
+                      tuneGrid = data.frame(k = c(1:50)), 
+                      trControl = trainControl(
+                        method = "repeatedcv", 
+                        number = 5, 
+                        repeats = 10)) 
+
+pert_knn
+```
+
+Once again, after cross-validation of KNN model, **the best k=3 with accuracy of 97.16%**:
+
+```{r}
+plot(pert_knn)
+```
+
+### **[KNN] Step 3: Predicting + Estimating the Accuracy **
+
+We have found the best KNN tunes for each of the sets and know the accuracy after cross-validation on the training set. 
+
+Now, for each data set, let's predict the response class and calculate the test accuracy.
+
+**1. Mean imputation KNN Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_mean <- predict(mean_knn,mean_test)
+
+#confusion matrix
+cm_mean <- table(Actual=mean_test$Class, Predicted=predict_mean)
+cm_mean
+
+#calculate accuracy
+accuracy_mean <- sum(predict_mean == mean_test[,10])/nrow(mean_test)
+accuracy_mean
+```
+
+**Results**: With **Mean Imputation** the best **k=3** for cross-validated KNN Model, with **97.14% accuracy on the training set** and **95.43% accuracy on the test set**.
+
+**2. Mode imputation KNN Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_mode <- predict(mode_knn,mode_test)
+
+#confusion matrix
+cm_mode <- table(Actual=mode_test$Class, Predicted=predict_mode)
+cm_mode
+
+#calculate accuracy
+accuracy_mode <- sum(predict_mode == mode_test[,10])/nrow(mode_test)
+accuracy_mode
+```
+
+**Results**: With **Mode Imputation** the best **k=3** for cross-validated KNN Model, with **97.16% accuracy on the training set** and **95.43% accuracy on the test set**.
+
+The result is the same with mean imputation set.
+
+**3. Regression imputation KNN Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_reg <- predict(reg_knn,reg_test)
+
+#confusion matrix
+cm_reg <- table(Actual=reg_test$Class, Predicted=predict_reg)
+cm_reg
+
+#calculate accuracy
+accuracy_reg <- sum(predict_reg == reg_test[,10])/nrow(reg_test)
+accuracy_reg
+```
+
+**Results**: With **Regression Imputation** the best **k=3** for cross-validated KNN Model, with **97.16% accuracy on the training set** and **95.43% accuracy on the test set**.
+
+Once again, the same result.
+
+**4. Regression + Perturbation imputation KNN Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_pert <- predict(pert_knn,pert_test)
+
+#confusion matrix
+cm_pert <- table(Actual=pert_test$Class, Predicted=predict_pert)
+cm_pert
+
+#calculate accuracy
+accuracy_pert <- sum(predict_pert == pert_test[,10])/nrow(pert_test)
+accuracy_pert
+```
+
+**Results**: With **Regression Imputation** the best **k=3** for cross-validated KNN Model, with **97.16% accuracy on the training set** and **95.43% accuracy on the test set**.
+
+**All imputation methods end up giving us KNN models with the same optimal k and the same accuracy on the test set**. 
+
+Let's use the same 4 data sets to perform SVM and compare the results
+
+### **[kSVM] Step 1: Preprocessing + Building the Models**
+
+For kSVM we will also standardize the data and use repeated cross-validation to estimate accuracy on the training sets. We will use the simple linear kernel and try different C values as a generated value grid of 25 values from 0.01 to 100. **Larger C will make our model choose smaller-margine hyperplanes to get better classification accuracy, and smaller C will lead to a larger margin separation and perhaps will lead to larger error**. Since we are building a model for medical diagnostics, it is probably a good idea to keep the margin larger, so that the model is also universal for future data points (new patients) and not just tailored for this particular data set.
+
+**1. Mean imputation SVM:**
+
+```{r}
+set.seed(1)
+mean_svm <- train(as.factor(Class)~.,
+                          mean_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = seq.int(0.01, 100, length = 20)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+mean_svm
+
+
+```
+
+**The best C-value after cross-validation for mean imputation data is 0.01, with an accuracy of 97.12%**:
+
+```{r}
+plot(mean_svm)
+```
+
+**2. Mode imputation SVM:**
+
+```{r}
+set.seed(1)
+mode_svm <- train(as.factor(Class)~.,
+                          mode_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = seq.int(0.01, 100, length = 20)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+mode_svm
+
+
+```
+
+**The best C-value after cross-validation for mode imputation data is 0.01, with an accuracy of 97.12%** - the same result as with mean imputation:
+
+```{r}
+plot(mode_svm)
+```
+
+**3. Regression imputation SVM:**
+
+```{r}
+set.seed(1)
+reg_svm <- train(as.factor(Class)~.,
+                          reg_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = seq.int(0.01, 100, length = 20)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+reg_svm
+
+
+```
+
+Same result: **the best C-value after cross-validation for regression imputation data is 0.01, with an accuracy of 97.12%**:
+
+```{r}
+plot(reg_svm)
+```
+
+**4. Regression & Perturbation imputation SVM:**
+
+```{r}
+set.seed(1)
+pert_svm <- train(as.factor(Class)~.,
+                          pert_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = seq.int(0.01, 100, length = 20)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+pert_svm
+
+
+```
+
+The accuracy is a bit higher this time**the best C-value after cross-validation for regression + perturbation imputation data is 0.01, with an accuracy of 97.14%**:
+
+```{r}
+plot(pert_svm)
+```
+
+OVerall, **with kSVM models the cross-validated models have a very similar accuracy of 97, and KNN surpasses them by only 0.02%**. Let's see if KNN and SVM are as similar on the test data.
+
+### **[kSVM] Step 2: Predicting + Estimating the Accuracy **
+
+For each data set, let's predict the response class and calculate the test accuracy.
+
+**1. Mean imputation kSVM Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_mean_svm <- predict(mean_svm,mean_test)
+
+#confusion matrix
+cm_mean_svm <- table(Actual=mean_test$Class, Predicted=predict_mean_svm)
+cm_mean_svm
+
+#calculate accuracy
+accuracy_mean_svm <- sum(predict_mean_svm == mean_test[,10])/nrow(mean_test)
+accuracy_mean_svm
+```
+
+**Results**: With **Mean Imputation** the best **C=0.01** for cross-validated kSVM Model, with **97.12% accuracy on the training set** and **96% accuracy on the test set**.
+
+**2. Mode imputation kSVM Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_mode_svm <- predict(mode_svm,mode_test)
+
+#confusion matrix
+cm_mode_svm <- table(Actual=mode_test$Class, Predicted=predict_mode_svm)
+cm_mode_svm
+
+#calculate accuracy
+accuracy_mode_svm <- sum(predict_mode_svm == mode_test[,10])/nrow(mode_test)
+accuracy_mode_svm
+```
+
+**Results**: With **Mode Imputation** the best **C=0.01** for cross-validated kSVM Model, with **97.12% accuracy on the training set** and **96% accuracy on the test set**.
+
+The result is the same with mean imputation set.
+
+**3. Regression imputation kSVM Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_reg_svm <- predict(reg_svm,reg_test)
+
+#confusion matrix
+cm_reg_svm <- table(Actual=reg_test$Class, Predicted=predict_reg_svm)
+cm_reg_svm
+
+#calculate accuracy
+accuracy_reg_svm <- sum(predict_reg_svm == reg_test[,10])/nrow(reg_test)
+accuracy_reg_svm
+```
+
+**Results**: With **Regression Imputation** the best **C=0.01** for cross-validated kSVM Model, with **97.12% accuracy on the training set** and **96.57% accuracy on the test set**.
+
+With regression imputation, the results are slightly higher
+
+**4. Regression + Perturbation imputation kSVM Accuracy:**
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_pert_svm <- predict(pert_svm,pert_test)
+
+#confusion matrix
+cm_pert_svm <- table(Actual=pert_test$Class, Predicted=predict_pert_svm)
+cm_pert_svm
+
+#calculate accuracy
+accuracy_pert_svm <- sum(predict_pert_svm == pert_test[,10])/nrow(pert_test)
+accuracy_pert_svm
+```
+
+**Results**: With **Regression and Perturbation Imputation** the best **C=0.01** for cross-validated kSVM Model, with **97.14% accuracy on the training set** and **96% accuracy on the test set**.
+
+**All imputation methods provide us with good kSVM models with high accuracy on the training set of 96%, which is 0.5% higher than test accuracies with KNN - so kSVM works slightly better on our data**. 
+
+### **Modeling on data with removed NAs**
+
+Let's build KNN and kSVM for a data set where NA values have been removed
+
+### **[KNN] Step 1: Sampling **
+
+Remove NA values:
+
+```{r}
+rem_data <- data[-narows,]
+rem_data[23:30,]
+```
+
+Sample the data (75/25):
+
+```{r}
+set.seed(3)
+
+#find the number of rows for test set
+index <- round(nrow(rem_data)*0.25,digits=0)
+
+#randomly sample the rows which will go to the test set (20%)
+test_sample <- sample(1:nrow(rem_data), index)
+
+#create the test set - exclude id column
+rem_test <- rem_data[test_sample,-1]
+head(rem_test)
+
+#create the train set
+rem_train <- rem_data[-test_sample,-1]
+head(rem_train)
+
+#CHECK PROPORTIONS:
+
+#whole set
+prop.table(table(rem_data$Class))
+
+#test set
+prop.table(table(rem_test$Class))
+
+#train set
+prop.table(table(rem_train$Class))
+```
+
+Class proportion in the two new sets is good, we can build a model.
+
+### **[KNN] Step 2: Preprocessing + Building the Model **
+
+
+```{r}
+set.seed(1)
+rem_knn <- train(as.factor(Class)~ .,
+                      rem_train, 
+                      method = "knn",
+                      preProcess = c("center", "scale"), 
+                      tuneGrid = data.frame(k = c(1:50)), 
+                      trControl = trainControl(
+                        method = "repeatedcv",
+                        number = 5, 
+                        repeats = 10)) 
+
+rem_knn
+```
+
+Unlike previously where optimal k was 3, with removed NA values the **cross-validated model with highest accuracy (97.19%) is at k=9:** 
+
+```{r}
+plot(rem_knn)
+```
+
+Let's see which accuracy our model will have on the test set.
+
+### **[KNN] Step 3: Predicting + Estimating the Accuracy **
+
+Calculate model's accuracy on the test data:
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_rem <- predict(rem_knn,rem_test)
+
+#confusion matrix
+cm_rem <- table(Actual=rem_test$Class, Predicted=predict_rem)
+cm_rem
+
+#calculate accuracy
+accuracy_rem <- sum(predict_rem == rem_test[,10])/nrow(rem_test)
+accuracy_rem
+```
+
+**Results**: Our KNN model built on the data where **rows with missing data have been removed **, has the accuracy of **95.32% on the test set** using the best k=9 found after cross-validation of models build with different k on training data.
+
+This test accuracy is similar to what we got using imputation methods.
+
+### **[kSVM] Step 1: Preprocessing + Building the Models**
+
+Now let's build the kSVM model for the data set with removed NAs using the same process as before:
+
+```{r}
+set.seed(1)
+rem_svm <- train(as.factor(Class)~.,
+                          rem_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = seq.int(0.01, 100, length = 20)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+rem_svm
+
+
+```
+
+**The best C-value after cross-validation for data with removed NAs is 0.01, with an accuracy of 97.23%**:
+
+```{r}
+plot(rem_svm)
+```
+
+### **[kSVM] Step 2: Predicting + Estimating the Accuracy **
+
+Estimate model's accuracy on the test set:
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_rem_svm <- predict(rem_svm,rem_test)
+
+#confusion matrix
+cm_rem_svm <- table(Actual=rem_test$Class, Predicted=predict_rem_svm)
+cm_rem_svm
+
+#calculate accuracy
+accuracy_rem_svm <- sum(predict_rem_svm == rem_test[,10])/nrow(rem_test)
+accuracy_rem_svm
+```
+
+As we can see, removal of NA values has led us to KNN and kSVM model with similar accuracies to those with imputation methods used - **with best C=0.01, accuracy on the test set is 96.49%**. So far, all models have very similar test accuracies.
+
+### **Modeling on data with binary variable**
+
+Finally, let's build KNN and kSVM for a data set where a binary variable indicates whether the data is missing
+
+### **[KNN] Step 1: Sampling **
+
+Let's add the binary variable to the data (0 when data is missing):
+
+```{r}
+binary <- data
+binary$Missing[is.na(data$Bare_Nuclei)==T] <- 0
+binary$Missing[is.na(data$Bare_Nuclei)==F] <- 1
+
+binary[23:30,]
+```
+
+And add the interaction factor:
+
+```{r}
+#0 if NA
+binary$Interact[is.na(data$Bare_Nuclei)==T] <- 0
+
+#normal value if not NA
+binary$Interact[is.na(data$Bare_Nuclei)==F] <- as.integer(data[-narows,]$Bare_Nuclei)
+
+binary[23:30,]
+```
+
+Now we can sample the data (75/25 as usual):
+
+```{r}
+set.seed(1)
+
+#find the number of rows for test set
+index <- round(nrow(binary)*0.25,digits=0)
+
+#randomly sample the rows which will go to the test set (20%)
+test_sample <- sample(1:nrow(binary), index)
+
+#create the test set - exclude id column
+bin_test <- binary[test_sample,-1]
+head(bin_test)
+
+#create the train set
+bin_train <- binary[-test_sample,-1]
+head(bin_train)
+
+#CHECK PROPORTIONS:
+
+#whole set
+prop.table(table(binary$Class))
+
+#test set
+prop.table(table(bin_test$Class))
+
+#train set
+prop.table(table(bin_train$Class))
+```
+
+Class proportion in the two new sets is good, we can build a model
+
+### **[KNN] Step 2: Preprocessing + Building the Model **
+
+We will use the interaction factor in our set instead of Bare_Nuclei (and not use the 'missing' column, since the 0 values are already in the interaction variable)
+
+```{r}
+set.seed(1)
+bin_knn <- train(as.factor(Class)~ Clump_Thickness + Uniformity_Size + Uniformity_Shape + Marginal_Adhesion + Single_Epith_Size + Bland_Chromatin + Normal_Nucleoli + Mitoses + Interact,
+                      bin_train, 
+                      method = "knn",
+                      preProcess = c("center", "scale"), 
+                      tuneGrid = data.frame(k = c(1:50)), 
+                      trControl = trainControl(
+                        method = "repeatedcv",
+                        number = 5, 
+                        repeats = 10)) 
+
+bin_knn
+```
+
+Using data with a binary variable indicating missing values and an intercation factor, the **cross-validated model with highest accuracy (97.18%) is at k=3:** 
+
+```{r}
+plot(bin_knn)
+```
+
+Let's see which accuracy our model will have on the test set.
+
+### **[KNN] Step 3: Predicting + Estimating the Accuracy **
+
+Calculate model's accuracy on the test data:
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_bin <- predict(bin_knn,bin_test)
+
+#confusion matrix
+cm_bin <- table(Actual=bin_test$Class, Predicted=predict_bin)
+cm_bin
+
+#calculate accuracy
+accuracy_bin <- sum(predict_bin == bin_test[,10])/nrow(bin_test)
+accuracy_bin
+```
+
+**Results**: Our KNN model built on the data where **a binary variable indicated NA values and an interaction factor replaces the attribute with missing data**, has the accuracy of **95.43% on the test set** using the best k=3 found after cross-validation of models build with different k on training data.
+
+This test accuracy is the same with what we got using imputation methods.
+
+### **[kSVM] Step 1: Preprocessing + Building the Models**
+
+Now let's build the kSVM model using the same data set:
+
+```{r}
+set.seed(1)
+bin_svm <- train(as.factor(Class)~ Clump_Thickness + Uniformity_Size + Uniformity_Shape + Marginal_Adhesion + Single_Epith_Size + Bland_Chromatin + Normal_Nucleoli + Mitoses + Interact,
+                          bin_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = seq.int(0.01, 100, length = 20)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+bin_svm
+
+
+```
+
+Looks like the best accuracy lies between 0.01 and 5 this time - let's test several values there to find the best C:
+
+```{r}
+set.seed(1)
+bin_svm <- train(as.factor(Class)~ Clump_Thickness + Uniformity_Size + Uniformity_Shape + Marginal_Adhesion + Single_Epith_Size + Bland_Chromatin + Normal_Nucleoli + Mitoses + Interact,
+                          bin_train, 
+                          method = "svmLinear", 
+                          preProcess = c("center", "scale"), 
+                          tuneGrid = expand.grid(C = c(0.01, 0.1, 0.5, 1, 2.5, 5)),
+                          trControl = trainControl(
+                            method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10)) 
+bin_svm
+```
+
+**The best C-value after cross-validation for data with binary variable for NAs was found at C=1, with an accuracy of 97.00%**:
+
+```{r}
+plot(bin_svm)
+```
+
+### **[kSVM] Step 2: Predicting + Estimating the Accuracy **
+
+Estimate model's accuracy on the test set:
+
+```{r}
+set.seed(1)
+
+#make the prediction
+predict_bin_svm <- predict(bin_svm,bin_test)
+
+#confusion matrix
+cm_bin_svm <- table(Actual=bin_test$Class, Predicted=predict_bin_svm)
+cm_bin_svm
+
+#calculate accuracy
+accuracy_bin_svm <- sum(predict_bin_svm == bin_test[,10])/nrow(bin_test)
+accuracy_bin_svm
+```
+
+With **best C=1, the test accuracy is 96.57%**.
+
+## **Results Table**
+
+Overall, all the data sets (with imputation, NA removal and binary variables indicating missing data) have led us to **similar models with only a slight difference in test accuracy**. In general,**test accuracies of kSVM models is a bit higher than KKN**, but all the models appear to have good classification quality. It seems like for this data set, **the key is to find the best tuning parameters like k and C instead of using a particular imputation approach** - but perhaps with more data and future classifications imputation's benefits compared to removed rows, for example, will be more obvious.
+
+Below is the comparison of accuracies for all models we've built:
+
+**KNN Models**
+
+```{r}
+# Define the data
+knn <- tibble::tribble(
+    ~Type, ~Best_k, ~Accuracy_Train_CV, ~Accuracy_Test,
+    "Mean Imputation",       3,           "97.14%",       "95.43%",
+    "Mode Imputation",       3,           "97.16%",       "95.43%",
+    "Regression Imputation",       3,           "97.16%",       "95.43%",
+    "Regression with Perturbation Imputation",       3,           "97.16%",       "95.43%",
+    "Removal of Missing Values",       9,           "97.19%",       "95.32%",
+    "Binary Variable with Interaction Factor",       3,           "97.18%",       "95.43%"
+)
+
+# Use knitr's kable function to generate the table
+knitr::kable(knn, digits = 3, row.names = FALSE, align = 'c')
+
+```
+
+**kSVM Models**
+
+```{r}
+# svm tibble
+svm <- tibble::tribble(
+  ~Type, ~Best_C, ~Accuracy_Train_CV, ~Accuracy_Test,
+  "Mean Imputation", 0.01,  "97.12%", "96.00%",
+  "Mode Imputation", 0.01,  "97.12%", "96.00%",
+  "Regression Imputation", 0.01,  "97.12%", "96.57%",
+  "Regression with Perturbation Imputation", 0.01,  "97.14%", "96.00%",
+  "Removal of Missing Values", 0.01,  "97.23%", "96.49%",
+  "Binary Variable with Interaction Factor", 1,  "97.00%", "96.57%"
+)
+
+# Display the table
+kable(svm, digits = 3, row.names = FALSE, align = "c")
+
+```
+
+
+
+
+
+
