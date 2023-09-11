@@ -1,0 +1,588 @@
+---
+title: "Exponential Smoothing to Analyze End of Summer Trends"
+author: "Alena Fedash"
+always_allow_html: true
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+date: "2022-09-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **Summary of Results**
+
+Since exponential smoothing is a time series forecasting method, I began my analysis by converting the data to a **time series object**. As frequency, I used the number of days which we had for each year in the data set (July through October), and the start value was the first year we had, 1996. This way, I generated a times series object with 20 'seasons', each season being defined by temperatures from July 1 to October 31.
+
+After that, I performed visual inspection of the times series, and noticed that, according to the plot, the data is more likely to have an **additive seasonality factor**, rather than multiplicative, since there was no obvious funnel-like shape on the graph. 
+
+Nevertheless, I decomposed the time series data trying both methods, multiplicative and additive seasonality. Both showed similar results, the only difference being that in multiplicative version random and seasonal components were displayed as coefficient rather than additive values. **Decomposition also showed that the trend factor is rather insignificant**, suggesting there is no year-to-year trend in temperature change. This is an important signal that there is no general 'warming' in our data that is becoming more obvious every year - the temperatures are rather stable. There was also a **significant random component**, which had a wider value range compared to seasonality (and trend). That is a sign that it would be hard to build accurate predictions (if needed) with such data, as there is too much 'noise' present. This is logical, since temperature prognosis is usually done using winds, cyclones and rather data rather than last years' temperatures.
+
+After decomposition, I performed **Single, Double and Triple (additive and multiplicative) Exponential smoothing**, and got the results, which can be found in **Step 5** of the solution (comparative table of 4 ES models).
+
+Single ES did not consider trend and seasonality, and double ES considered trend, but did not take seasonality into account (which was obviously present, according to decomposition plot). 
+In all cases, **alpha (base values) was closer to 1 rather than 0, suggesting that the model found it optimal to put more weight on recent observations rather than past ones and did not detect too much randomness in the system**. Baseline estimate ranged from 63 to 73 degrees. On the other hand, **beta (trend) values suggested that the trend slope of the data is not much dependent on recent trend slopes**. Final trend estimate was always almost 0, suggesting that **there is no significant trend in temperature change over 20 years**. Finally, **gamma values (seasonal component) for the triple ES suggested putting more weight on recent seasonalities**. For the triple ES models I also got seasonal factor estimates for each of the 123 days.
+
+The final choice was between **Additive and Multiplicative Triple ES Models**. I fitted both models, plotted their decomposition and fit on the data. The difference was very little and rather hard to tell visually. However, with **Additive seasonality** the **Sum of Squared Errors** was lower (66244 compared to 68904 with multiplicative seasonality), so **additive seasonality method was chosen**.
+
+**The logic for CUSUM was the following:** use the known seasonal factors for each day of each year from the exponential smoothing model to build a CUSUM model for **each year** and detect violations. For each year, explore **which day** the seasonal factor **drops below the set margin** (lower violations). Then, **compare the dates of first violation** year-to-year to see if the dates are **getting later**. This would mean that the fall starts later each year, hence the summers are becoming longer. To do that, I put extracted from the model seasonal factors for each day of each year in a new data frame and used it for CUSUM model building.
+
+To define the **No Change Period** for the model, based on which I would calculated means and standard deviations of seasonal factors for each year, I calculated **average seasonal factor value** for each day using all years' data and visualized it on a plot to see the general pattern of the factors over a season.
+I chose the first **51 days** as the no-change period (July 1 - Aug 20). A shorter period could be riskier in terms of false positives, as the factors for July only are in general high, and a longer period, on the other hand, could make the model miss real summer end dates due to variability in year-to-year seasonal factors (some extreme values could be included in the mean). 51 days period seemed like the perfect range of dates with a 'normal' factor values. With this period, the 19  (19 years, as 1996 is used as the first observation in exponential smoothing) calculated mean values of seasonal factors ranged from 4.5 to 5.8, and standard deviations from 3.5 to 4.6.
+
+As for **C and T**, I decided to start with most common values (1 or 2 standard deviations for C, 4 or 5 standard deviations for T). I chose **C=1sd and T=4sd** (slightly lowered the violation margins to 4sd, making the model a bit more sensitive, since sd was not that little (3.5-4.6) compared to the range of average seasonal factor values (they go from 0 to 13 and from 0 to -17)). Since the last time unofficial summer end I found was around 20th September, I assumed that a good combination of C and T would produce a similar result ± 1 week.
+
+The chosen C and T values turned out to be a **great combination**. As a result, I got unofficial fall start dates ranging from 20 to 24 September. 
+
+**The answer to the question is negative, because  there is no evidence that the summers have become longer** - fall start dates vary year-to-year by  one or two days, and there is no trend in such change. In fact, in 1997-1999 summer was a bit longer (fall starts on the 09.24) compared to 2014-2015 (09.22 and 09.21).
+
+I went further and **compared the results with my previous CUSUM results**, where I calculated start of fall for each year **without exponential smoothing** using similar C and T values (C=1sd, T=5sd). The results have changed drastically - before exponential smoothing fall start dates range by almmost 2 months, from August to October, which is why it was harder to answer the question whether the summers have gotten longer. Exponential smoothing helped to get accurate results without taking the excess 'white noise' and randomness into consideration.
+
+**Below is a step-by-step solution with more reasoning and explanation of each choice I made throughout this exercise.**
+
+# **Solution in R**
+
+### **Step 0: Load the libraries**
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(qcc)
+
+```
+
+### **Step 1: Load the dataset & do basic exploration**
+
+Here, I load the data set and rename the columns to remove the 'X' symbols near each year.
+
+```{r}
+data <- read.table("temps.txt", 
+                   header = TRUE, 
+                   stringsAsFactors = FALSE,
+                   sep = "", 
+                   dec = ".")
+
+#rename to exclude X from att names
+data <- data %>% rename_at(vars(starts_with("X")), funs(str_replace(., "X", "")))
+
+data[,"DAY"] <- as.Date(data[,"DAY"], "%d-%B")
+#leave only month and day
+data[,"DAY"] <- format(data[,"DAY"],"%m.%d")
+head(data)
+```
+
+I will also perform some basic data exploration to learn more about the data.
+
+```{r}
+boxplot(data[-1],
+        xlab="Year",
+        ylab="°F",
+        col="lightblue",
+        border="darkblue")
+title(main="July-October Temperatures in Atlanta (1996-2015")
+```
+
+There is no obvious trend of a changing median temperature over the years, according to the boxplot. It looks like temperatures in general were a bit higher in 2010 and 2011, but the median goes back down to previous values in 2013. Also, some years seem to be more 'stable' in temperature, and sometimes it varies more - there are years with short whiskers, as well as years with many outlying values. In general, I would suspect that the temperatures have not been increasing over the last few years. However, let's do a thorough analysis with exponential smoothing to draw supported conclusions.
+
+
+### **Step 2: Convert Data to Time Series**
+
+Since exponential smoothing is a time series forecasting method, we need to convert our data to time series.
+
+The ts() function requires **two critical inputs - frequency and start**.
+Since we have years' data from 1996 to 2015, **1996 would be our start**.
+And, because **we have 123 days' temperature known for each year, 123 would be our frequency** - that is the number of rows in out data frame.
+
+First, we need to merge all temperatures in a vector, and then generate a time-series object using the start and frequency values from above.
+
+```{r}
+#There are two critical inputs we must give the function — frequency and start.
+
+#Turn col data into one vector
+data_vector <- as.vector(unlist(data[,2:ncol(data)]))
+
+#Turn data to ts object
+#we have 123 days' temp for each year - we will have 'seasons' from 1996 each lasting 123 days
+
+datats <- ts(data_vector,start=1996,frequency=nrow(data))
+head(datats)
+
+```
+
+Visualize our time series object:
+
+```{r}
+plot(datats, main="Temperatures in Atlanta (07.01-10.31, 1996-2015)", xlab="Year", ylab="Temperature")
+```
+
+Looking at the graph here, although there could be some factors influencing our data (for example, randomness), we can already see that there is no obvious trend - the 'arches' (our 'seasons') stay on the same level, and there is no distinctive upwards or downwards trend in the temperatures. Also, there are some 'anomalities' in each season - some very low or very high temperatures, but there is no obvious pattern connecting them.
+
+### **Step 3: Decomposition**
+
+Let us try decomposition for our data to check how significantly factors like trend, seasonality and randomness affect our temperatures.
+
+There are two types of decomposition we could perform - with **additive or multiplicative** seasonality.
+
+Before trying both, let's think about what each seasonality type would mean for our data:
+-**Additive seasonality** would mean that our seasons remain similar in widths and heights, while there is a linear trend year-to year. So, our average temperature would be increasing/decreasing year to year, but the amplitude of temperature variations would stay the same.
+-**Multiplicative seasonality**, on the other hand, would mean that our temperatures are becoming more extreme in their range year to year - for example, each year for the part of the season with warmer temperatures, the temperatures would become even more warmer, and for the  part with lower temperatures of the season, unlike with additive seasonality, where they would become warmer as well (to keep the temperature spread similar to last year), they would become even colder.
+
+Multiplicative seasonality would most probably make our data look like a funnel, so let's check the graph again to see if that is the case. I will also add a smoothing line to see the direction of temperature changes
+
+```{r}
+ggplot(as.data.frame(datats),aes(x=c(1:2460),y=x))+
+  geom_line(aes(x=c(1:2460),y=x),color="darkblue")+
+  geom_smooth(method="loess",color="green")
+```
+
+As we can see, our data does not look like a funnel. The seasonality is most probably additive. And, what is more important, it looks like there is no trend at all.
+
+Keeping in mind that our seasonality factor would likely be additive, I will still decompose the data with both seasonality types to compare the results.
+
+**Decomposition (additive seasonality):**
+
+```{r}
+components_dts <- decompose(datats)
+plot(components_dts)
+```
+
+On the graph above besides the observed temperatures we see 3 other components of the data set:
+-**Trend**: shows the long-term trends in the data. **We can see that it barely ranges in values from 82 to 86, so as we suspected before, there is likely no significant long-term trend in the data**, hence we are unlikely to get proof that the summers are getting warmer or colder
+-**Seasonal**: repeated seasonal component that makes data vary withing the seasons. **We have a significant seasonality factor - we can see how in the beginning of each season (summer) the temperatures are higher, and how they lower towards its end (October)**
+-**Random**: Components that are left over, and are not expected from seasonality or trends. **Our random component is quite significant - its range is bigger than the range of the seasonal factor or the trend**. Higher significance of randomness compared to seasonality and trend in general would make the prediction for the future period less accurate. That is logical - with almost no trend and this much randomness we would be unlikely to predict temperatures for each day in July-October 2016 using just past years' values. After all, there are lots of factors that influence weather, and it rather depends on the ongoing forces (like cyclones) than on the last years' data.
+
+I will output the range of all factors to compare them to decomposition with multiplicative seasonality:
+
+```{r}
+
+
+#trend
+min(na.omit(components_dts$trend))
+max(na.omit(components_dts$trend))
+
+
+#seasonal 
+min(na.omit(components_dts$seasonal))
+max(na.omit(components_dts$seasonal))
+
+
+#random 
+min(na.omit(components_dts$random))
+max(na.omit(components_dts$random))
+```
+
+Indeed, the random component has the widest scale, while the trend is insignificant (we are unlikely to fin change in temperatures for the last years).
+
+
+**Decomposition (multiplicative seasonality):**
+
+Let us do the same with multiplicative seasonality:
+
+```{r}
+#Decomposition (multiplicative)
+components_dts_mult <- decompose(datats, type="mult")
+plot(components_dts_mult)
+```
+
+**The difference** is that the random and seasonal components are now multiplicative instead of additive. In general, We still have a trend with low significance, good seasonality and lots of randomness.
+
+Let's check the scale of each component:
+
+```{r}
+#trend 
+min(na.omit(components_dts_mult$trend))
+max(na.omit(components_dts_mult$trend))
+
+
+#seasonal 
+min(na.omit(components_dts_mult$seasonal))
+max(na.omit(components_dts_mult$seasonal))
+
+
+#random 
+min(na.omit(components_dts_mult$random))
+max(na.omit(components_dts_mult$random))
+```
+
+We have the same values for the trend component, and the Seasonal and Random factors are expressed differently (with coefficients).
+
+**Conclusion for step 3:**
+
+We now have found that it is unlikely for us to detect a trend in temperatures to answer the main question, whether the summers have become longer/warmer. It seems from the graphs that any change would more likely be due to change.
+Moreover, there is a seasonality component with good significance, so we would need to consider it in our final model with exponential smoothing.
+Finally, from visual inspection of the data it appear that we would rather have additive seasonality than multiplicative.
+
+Now, let's move on to exponential smoothing.
+
+### **Step 4: Exponential smoothing**
+
+Based on the findings in the previous step, we can say that the trend for our data is minimal, and temperature changes would probably be caused by randomness.
+
+Now, let's apply exponential smoothing to our data. We will try different models using HoltWinters function and compare them. 
+
+We will then **extract the seasonal factors** for each day of the year and use them to perform CUSUM Using these factors, we would be able to get rid of 'white noise' or randomness that could affect the accuracy of CUSUM.
+
+There are **3 types of exponential smoothing** that we will try:
+-Single ES - simple ES that would use a weighted moving avg of our temperatures without trend and seasonality components
+-Double ES - a more reliable method that considers trends in the data, but no seasonality
+-Triple ES - a method for data with both trend and seasonality
+
+From our previous findings, I would suspect that the model most suitable for our data would be **triple ES**, as we have both trend and seasonality components.
+
+I will try all the models and compare the optimal values that they produce.
+I will also compare models with additive and multiplicative seasonality to make the final choice for the type of this component.
+
+**Single ES**
+
+```{r}
+#single - no trend no season
+HW1 <- HoltWinters(datats, 
+                     beta=FALSE, #model without trend 
+                     gamma=FALSE) #not considering seasonality 
+                     
+HW1 
+```
+
+We have a baseline estimate of 63.309, and the optimal alpha as estimated by the model is **0.8388**. That means that there is not much randomness in the data, and we put more trust in the most recent observations (temperature in the most recent years).
+
+**Double ES**
+
+```{r}
+HW2 <- HoltWinters(datats, 
+                   gamma=FALSE) #now we have trend value in the M but still no season
+HW2
+```
+
+With an ES that includes trend as a component, we get a similar baseline estimate of 63, and a **slightly higher alpha of 0.8445** - so the amount of randomness is again found to be rather low, and the recent datapoints can be trusted.
+
+The **trend value, beta** is close to zero, which means that **the trend slope of our temperatures is less dependent on the trend slopes for the recent temperatures**. In other words, recent temperature observations do not add to the trend value that much, and that resulted in a **final trend estimate close to 0, -0.07**. This ones again is a signal that no significant trend is observed in our temperature observations overtimes, moreover, this small trend is negative, so the temperatures have not become warmer over the years.
+
+**Triple ES - Additive seasonality**
+
+First, let's try additive seasonality component gamma and check how it changes the results:
+
+```{r}
+HW3_a <- HoltWinters(datats)
+HW3_a
+```
+
+Once we added a seasonality component, gamma, our **alpha lowered to 0.66, signalizing that now the model considers to be more randomness than before**, though the value is still closer to 1 rather than 0, so we rely more on the recent observations than on the past ones. This is not unexpected, since we saw that there was a random component when decomposing the data. 
+The **baseline estimate is now 71** degrees, **beta is 0**, so the most recent trend slopes are not taken into account for the **final trend estimate of -0.004**. Ocne again, there is no trend in temperatures change in our data. 
+Finally, we now have a **gamma, the seasonal component, of 0.62**, it is closer to 1 but not far from 0.5, so the weight of seasonal cycles in more or less even with a bit more accent on the recent seasonal cyclicities. We also have **123 seasonal faactors**, containing final estimates of the seasonal component for each day from July 1st to October 31st.
+
+```{r}
+plot(HW3_a$coefficients[3:length(HW3_a$coefficients)], 
+     type="o",
+     col="lightblue", 
+     lty=2, 
+     lwd=1, 
+     main="Seasonal Factors (Additive)", 
+     xlab="S", 
+     ylab="Value")
+points(HW3_a$coefficients[3:length(HW3_a$coefficients)], 
+       col="darkblue", 
+       pch=19, cex=1)
+abline(h=0)
+```
+
+From the plot of the seasonal factor estimates we can see that around the 80th day of a season (~20th August) are negative-only. So after that period the temperatures are estimated to be below the baseline with an application of a corresponding seasonal factor.
+
+**Triple ES - Multiplicative seasonality**
+
+Let's check if we get a different result using multiplicative seasonality:
+
+```{r}
+HW3_m <- HoltWinters(datats, seasonal = "multiplicative")
+HW3_m
+```
+
+Now, we have a slightly **lower alpha and gamma, and the same beta=0**, so less weight is put on recent observations. **Baseline estimate is at 73.4**, and the trend estimate is again very insignificant and negative, **-0.004**.
+
+Lets visualize seasonal factors for better understand of the difference of the two methods:
+
+```{r}
+plot(HW3_m$coefficients[3:length(HW3_m$coefficients)], 
+     type="o",
+     col="lightblue", 
+     lty=2, 
+     lwd=1, 
+     main="Seasonal Factors (Multiplicative)", 
+     xlab="S", 
+     ylab="Value")
+points(HW3_m$coefficients[3:length(HW3_m$coefficients)], 
+       col="darkblue", 
+       pch=19, cex=1)
+abline(h=1)
+```
+
+Similar picture to the previous method - after 80th day index seasonality factors drag the temperature below the baseline.
+
+### **Step 5: Choosing the model**
+
+Let's sum up the parameters of our models:
+
+```{r}
+es_models <- data.frame(
+  alpha=c(HW1$alpha,HW2$alpha,HW3_a$alpha,HW3_m$alpha),
+  beta=c(NA,HW2$beta,HW3_a$beta,HW3_m$beta),
+  gamma=c(NA,NA,HW3_a$gamma,HW3_m$gamma),
+  Baseline_Estimate=c(HW1$coefficients[1],HW2$coefficients[1],HW3_a$coefficients[1],HW3_m$coefficients[1]),
+  Trend_Estimate=c(HW1$coefficients[2],HW2$coefficients[2],HW3_a$coefficients[2],HW3_m$coefficients[2]))
+
+rownames(es_models) <- c('Single', 
+                         'Double', 
+                         'Triple (Additive)',
+                         'Triple (Multiplicative)')
+
+es_models
+```
+
+As we can see, once we introduce seasonality to the model, the alpha becomes lower and not as much weight is put on the most recent observations, as with the previous two models. 
+
+**The trend estimate** is close to zero and negative for all models where it is taken into account. **This signals that there is no change in our temperatures throughout the years**, so the answer to the main question is likely to be negative. Finally, multiplicative model put a bit less weight on most recent seasonal cycles and provides a slightly higher baseline estimate.
+
+**We should be choosing between additive and multiplicative triple ES models, as they take into account both trend and seasonality, and the latter is very significant for our temperatures data**.
+
+First, let's compare the decomposition plots of both models:
+
+```{r}
+plot(fitted(HW3_a), main="Decomposition (Additive)")
+plot(fitted(HW3_m), main="Decomposition (Multiplicative)")
+```
+
+The results are very similar - both models estimate a trend close to zero, and seasonalitys have year-to-year repetitive patterns, except for the last few years in the multiplicative model, where the range of the seasonal factor becomes slightly wider (due to high seasonality factors at the beginning of the season).
+
+This is not enough to make the final choice, so we keep exploring both models.
+
+**Let's try and visualize how both models fit the data:**
+
+```{r}
+par(mfrow=c(1,2))
+plot(HW3_a, main="Additive", xlab="Year", ylab="Observed/Fitted")
+
+plot(HW3_m, main="Multiplicative", xlab="Year", ylab="Observed/Fitted")
+```
+
+The first year is not present for the fitted values, as they are used as a first observation in ES and are not fitted according to the ES equation.
+Both models have a very similar fit, the only difference that is noticable visually are the slightly higher fitted values for the first few years in the multiplicative model.
+
+Finally, **let's compare the Sum of Squared Errors for each model**
+
+```{r}
+print('SSE Additive')
+HW3_a$SSE
+print('SSE Multiplicative')
+HW3_m$SSE
+```
+
+**SSE is smaller for the Additive model**. Hence, we should move on with the Additive ES - our initial assumption (based on visual inspection) that additive seasonality suits the data better was correct.
+
+### **Step 6: Preparation for CUSUM**
+
+Although we have found the trend estimate to be around 0, we should still check if there is any change in the seasonal factor values for the past few years. On the decomposition plot we have seen that the seasonality factor does not significantly change for the latest years - the length of seasons does not increase (the 'arches' on the graph are not getting wider year to year), and the duration of warm parts of each season (the width of the higher part of the arch) appear to be the same for each year. However, it is worth checking with CUSUM for any possible change in seasonal factors, as they may be hard to detect using visual inspection.
+
+**The logic for our CUSUM model will be the following:**
+Since we know seasonal factors for each day of each year from our ES model with additive seasonality, we can use them to detect whether the unofficial end of summer has become later.
+We will run CUSUM on seasonal factors for each data point for each year. By doing this we can see where in each year (on which day) a change was detected by CUSUM, and then we will compare those dates to see if the change happens later over time.
+
+Let's have a look at our fitted model output:
+
+```{r}
+head(HW3_a$fitted)
+```
+
+We need the 'season' column for the CUSUM - it contains the needed season factors for each day in the data set.
+
+Now let's transform those factors to a matrix and rename columns and rows so that we can use it for CUSUM analysis.
+
+```{r}
+#put seasonal factors in the matrix
+season_factors <- matrix(HW3_a$fitted[,4],nrow=123)
+dim(season_factors)
+head(season_factors)
+```
+
+We have 19 year (1997 to 2015, as 1996 is the first observation and is not included) and 123 days in each.
+
+Renaming columns and rows to make data look as the initial data set for convenience:
+
+```{r}
+#rename
+colnames(season_factors) <- c(1997:2015)
+rownames(season_factors) <- data$DAY
+#check
+head(season_factors)
+tail(season_factors)
+```
+
+Everything looks correct, now we can do our CUSUM Analysis.
+
+### **Step 7: CUSUM**
+
+As usual, before we perform CUSUM, we need to define our **no change period**.
+
+Last time I used a period from 1st to 31st July. 
+
+Let's plot average seasonal factor values for each day to check if we can use the same period:
+
+```{r}
+sf_avg<-data.frame(rowMeans(season_factors, n = 19)) 
+colnames(sf_avg)<-'Avg_seasonal_factor'
+head(sf_avg)
+```
+
+```{r}
+#ggplot(sf_avg, aes(x=1:123, y=Avg_seasonal_factor))+
+  #geom_line()+
+  #geom_point()
+
+plot_ly(data=sf_avg, x=1:123, y=~Avg_seasonal_factor, type='scatter', mode='lines+markers', fill='tozeroy', fillcolor='lightblue')
+
+```
+
+Based on the graph, we can see that until day 40 (Aug 9), there were no negative values for seasonal factors. On day 44 factor values go back up, but are not as high as before.
+
+Since the values would vary for each year, I would try to choose a safe range of first 51 days (1 July - 20 August). If we choose values up to day 60, for example, we could get more negative seasonal factor values, which might lower our mean but also increase standard deviation for some years. By increasing the period we risk adding 'summer end' values, if there are years when summer ended in the last week of August. Period of 51 days includes enough variability of the factors (they are not as stable in growth over the 123 days as temperatures were the last time) to calculate the optimal 'normal' values for each years' model. Moreover, from the last HW3 I remember that summer never ended before the last week of August (and more often in fall), so we are not including any values for fall here. 
+
+Moving on to the CUSUM, let's create vectors to store CUSUM models and violations for each year.
+
+```{r}
+models_cusum <- vector(mode="list", length=ncol(season_factors))
+violat_cusum <- vector(mode="list", length=ncol(season_factors))
+```
+
+Since we chose July as the no change period, we need to find the mean and standard deviation values for each year's seasonal factors:
+
+```{r}
+#mean and stdev of seasonal factors for each year
+#use July temps 
+mean_seasons <- vector(mode="list", length=0)
+stdev_seasons <- vector(mode="list", length=0)
+for (i in 1:ncol(season_factors)){
+  mean_seasons  <- append(mean_seasons,mean(season_factors[1:51,i]))
+  stdev_seasons <- append(stdev_seasons,sd(season_factors[1:51,i]))                     
+  
+}
+unlist(mean_seasons)
+unlist(stdev_seasons)
+```
+
+We have mean values ranging from 4.5 to 5.8 and st.dev. from 3.5 to 4.6
+These values do not change so much year to year, which is good for our model and suggests that we chose the no change period right.
+
+I will be using the cusum() function for each year. To start with, I will set C and T to  standard values. C is usually set to 1 or 2 standard deviation, and T to 4 or 5 st.dev. I will set C to 1sd and T to 4 sd (since our st. devs are between 3.5 and 4.6, which is not that small considering the scale of our season factors, which go from 0  to 13 and 0 to -17). Then base on the results I will adjust those values to balance the sensitivity of the model.
+
+```{r}
+dec_int <- 4 #4 st deviations for T
+se_shift <- 2 #2 instead of 1, since shift = 2C. SO 1st deviation for C
+```
+
+Finally, let's run CUSUM and see if we detect any violations
+
+```{r}
+
+for (y in 1:ncol(season_factors)) {
+  #cusum model for each year
+  models_cusum[[y]] <- cusum(season_factors[,y], #column of the year in loop
+                             center = unlist(mean_seasons)[y],
+                             std.dev = unlist(stdev_seasons)[y], #use st dev for the particular year
+                             decision.interval = dec_int, #T value, 5 st dev-s
+                             se.shift = se_shift, #shift value, 2C, 2
+                             plot = TRUE,
+                             title = colnames(season_factors)[y]) #add plot for each year's cusum
+  #cusum violation for each year - moment when fall came
+  #use the model we built above
+  #$use lower violation - the first day that violated temp - the 1st day of falL!
+  violat_cusum[[y]] <- models_cusum[[y]]$violations$lower}
+```
+
+It seems like the choice for C and T was good. 
+**We are looking for the lower violations on the graphs** - it is obvious that the change is usually detected after **the 3rd weeek of September** - a similar result compared to the one I got in the CUSUM project.
+
+Visually, it **does not appear that the summer is ending later**. But let's see the exact dates for each year:
+
+```{r}
+#vector to store first days of fall
+first_days <- vector(mode="list", length=ncol(season_factors))
+
+#add to that vector first days 
+for (y in 1:ncol(season_factors)){
+  first_days[y] <- min(violat_cusum[[y]])
+}
+#day index of first day of fall
+first_days <- unlist(first_days)
+
+#turn indexes to days
+fall_dates<- vector(mode="list", length=0)
+for (x in 1:19){
+  i=0
+  d<-first_days[x]
+  fall_dates <- append(fall_dates, data[d,1], after=i)
+  i=i+1
+  }
+
+fall_dates<-unlist(fall_dates)
+fall_dates
+```
+
+We can see that the date for first violation does not vary significantly, and there is no increasing trend. 
+To see that clearly, let's visualize the results.
+
+Data frame of unofficial fall start dates:
+
+```{r}
+year_list <- 1997:2015
+year_list <- as.list(year_list)
+date_year <- do.call(rbind, Map(data.frame, Year=year_list, FallStart=fall_dates))
+date_year
+```
+
+Plot:
+
+```{r}
+results_plot<- ggplot(data = date_year, aes(x = Year, y = FallStart, group=1)) +
+  geom_line(linetype="dashed", color="darkblue") +
+  geom_hline(yintercept = 2, color="lightblue")+ #compare to 09.21 for 2015
+  geom_point(color="blue")+
+  labs(title="Fall Start Dates in Atlanta (1997-2015)", y="Date")
+
+results_plot
+
+```
+
+As we can see, **there is no evidence that the summers have become longer**. Compared to 1997-1999, it even seems that summers have become slightly shorter. Hence, **the answer to our main question is No.**
+
+### **Step 8: Extra - comparing results with and without smoothing**
+
+I would like to compare the results to my CUSUM project where I defined fall start for each year without exponential smoothing. 
+I will not repeat CUSUM here, and just copy the start dates for each year. These are result for C=1sd and T=5sd.
+
+```{r}
+fall_dates_hw3 <- c('09.25','08.16','08.15','09.05','09.28','09.01','08.14','09.18','09.09','10.07','08.10','09.10','08.31','09.02','09.06','09.22','08.15','09.25','09.02')
+year_list1 <- 1997:2015
+year_list1 <- as.list(year_list)
+date_year1 <- do.call(rbind, Map(data.frame, Year=year_list, FallStart=fall_dates_hw3))
+date_year1
+```
+
+Plot previous results and compare with new ones:
+
+```{r}
+previous<-ggplot(data = date_year1, aes(x = Year, y = FallStart, group=1)) +
+  geom_line(linetype="dashed", color="darkgreen") +
+  geom_point(color="green")+
+  labs(title="No Exp.Sm. - Fall Start Dates", y="Date")
+previous
+```
+
+The effect of exponential smoothing is indeed drastic. Before it, fall start dates varied from Aug 10 to Oct 07 - almost 2 months' difference compared to just 4 days (09.20-09.24) with exponential smoothing. 
+
+To conlcude, Exponential smoothing has helped us get rid of the excess 'noise' and randomness in data, showed that there is no trend in temperature changes year to year, and proved that the summers are not getting longer.
